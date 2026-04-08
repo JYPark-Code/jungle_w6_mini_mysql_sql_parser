@@ -114,6 +114,91 @@ static void test_free_null(void) {
     g_pass++;
 }
 
+/* ─── 엣지 케이스 ────────────────────────────────────────── */
+
+static void test_empty_input(void) {
+    SECTION("빈 입력");
+    CHECK(parse_sql("") == NULL,            "empty string → NULL");
+    CHECK(parse_sql(NULL) == NULL,          "NULL input → NULL");
+    ParsedSQL *s = parse_sql("   \n\t  ");
+    CHECK(s == NULL,                        "whitespace only → NULL");
+    free_parsed(s);
+}
+
+static void test_unknown_keyword(void) {
+    SECTION("알 수 없는 키워드");
+    ParsedSQL *s = parse_sql("DROP TABLE users");
+    CHECK(s != NULL,                        "non-NULL on unknown");
+    CHECK(s->type == QUERY_UNKNOWN,         "type UNKNOWN");
+    free_parsed(s);
+}
+
+static void test_case_insensitive(void) {
+    SECTION("대소문자 무관 키워드");
+    ParsedSQL *s1 = parse_sql("select * from users where id = 1");
+    CHECK(s1->type == QUERY_SELECT,         "lowercase select");
+    CHECK(s1->where_count == 1,             "lowercase where");
+    free_parsed(s1);
+
+    ParsedSQL *s2 = parse_sql("Create TaBLe T (id Int)");
+    CHECK(s2->type == QUERY_CREATE,         "mixed case Create");
+    CHECK(s2->col_def_count == 1,           "mixed case col");
+    free_parsed(s2);
+}
+
+static void test_default_limit(void) {
+    SECTION("LIMIT 없을 때 기본값 -1");
+    ParsedSQL *s = parse_sql("SELECT * FROM users");
+    CHECK(s->limit == -1,                   "no LIMIT → -1");
+    free_parsed(s);
+}
+
+static void test_invalid_create_type(void) {
+    SECTION("CREATE TABLE 잘못된 타입은 경고만, 파싱 계속");
+    /* stderr 에 경고가 찍히지만 구조는 채워짐 */
+    ParsedSQL *s = parse_sql("CREATE TABLE t (id BANANA, name VARCHAR)");
+    CHECK(s->type == QUERY_CREATE,          "still CREATE");
+    CHECK(s->col_def_count == 2,            "both col_defs stored");
+    CHECK(strstr(s->col_defs[0], "BANANA") != NULL, "invalid type kept in col_def");
+    free_parsed(s);
+}
+
+static void test_where_operators(void) {
+    SECTION("다양한 WHERE 연산자");
+    const char *ops[] = {"=", ">", "<", ">=", "<=", "!="};
+    for (int i = 0; i < 6; i++) {
+        char buf[128];
+        snprintf(buf, sizeof(buf), "SELECT * FROM t WHERE x %s 1", ops[i]);
+        ParsedSQL *s = parse_sql(buf);
+        CHECK(s->where_count == 1,          "where count");
+        CHECK(strcmp(s->where[0].op, ops[i]) == 0, ops[i]);
+        free_parsed(s);
+    }
+}
+
+static void test_trailing_whitespace(void) {
+    SECTION("끝 공백/개행");
+    ParsedSQL *s = parse_sql("SELECT * FROM users   \n\t  ");
+    CHECK(s->type == QUERY_SELECT,          "type ok");
+    CHECK(strcmp(s->table, "users") == 0,   "table ok");
+    free_parsed(s);
+}
+
+static void test_select_or_where(void) {
+    SECTION("WHERE OR (2 conditions)");
+    ParsedSQL *s = parse_sql("SELECT * FROM users WHERE age < 20 OR age > 60");
+    CHECK(s->where_count == 2,              "2 conditions");
+    CHECK(strcmp(s->where_logic, "OR") == 0,"OR logic");
+    free_parsed(s);
+}
+
+static void test_order_by_asc_explicit(void) {
+    SECTION("ORDER BY ... ASC (명시)");
+    ParsedSQL *s = parse_sql("SELECT * FROM users ORDER BY name ASC");
+    CHECK(s->order_by != NULL && s->order_by->asc == 1, "ASC");
+    free_parsed(s);
+}
+
 static void test_sql_line_comment(void) {
     SECTION("SQL 라인 주석 (-- ...)");
     ParsedSQL *s = parse_sql(
@@ -268,6 +353,15 @@ int main(void) {
     test_delete();
     test_update();
     test_free_null();
+    test_empty_input();
+    test_unknown_keyword();
+    test_case_insensitive();
+    test_default_limit();
+    test_invalid_create_type();
+    test_where_operators();
+    test_trailing_whitespace();
+    test_select_or_where();
+    test_order_by_asc_explicit();
     test_sql_line_comment();
 
     test_ast_create();
