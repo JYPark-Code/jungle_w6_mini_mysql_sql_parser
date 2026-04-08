@@ -117,9 +117,9 @@ make valgrind SQL=query.sql
 | 브랜치 | 담당 | 영역 |
 |---|---|---|
 | `feature/parser` | 지용 | Parser 코어, CREATE TABLE, --json, --debug |
-| `feature/select` | A | SELECT executor |
-| `feature/insert-b` | B | INSERT/DELETE/UPDATE executor (경쟁) |
-| `feature/insert-c` | C | INSERT/DELETE/UPDATE executor (경쟁) |
+| `feature/select` | 석제 | SELECT executor |
+| `feature/insert-b` | 원우 | INSERT/DELETE/UPDATE executor (경쟁) |
+| `feature/insert-c` | 세인 | INSERT/DELETE/UPDATE executor (경쟁) |
 
 머지 흐름: `feature/* → dev → main`. `main` / `dev` 는 브랜치 보호로 직접 push 차단 (admin 만 우회 가능).
 
