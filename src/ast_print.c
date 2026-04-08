@@ -44,6 +44,18 @@ static const char *qtype_name(QueryType t) {
     }
 }
 
+/* condition_index 번째 WHERE 조건 앞에 붙는 결합자.
+ * Phase 1 에서는 where_links 를 우선 쓰고, 1주차 호환을 위해 where_logic 으로
+ * fallback 한다. */
+static const char *where_link_at(const ParsedSQL *sql, int condition_index) {
+    if (!sql || condition_index <= 0) return NULL;
+    if (sql->where_links && sql->where_links[condition_index - 1]) {
+        return sql->where_links[condition_index - 1];
+    }
+    if (sql->where_logic[0]) return sql->where_logic;
+    return NULL;
+}
+
 /* print_ast: ParsedSQL 트리를 out 으로 출력.
  *
  * 처음에 "ParsedSQL" 한 줄, 그 아래로 ├─ 와 └─ 모양의 트리 가지들.
@@ -79,19 +91,23 @@ void print_ast(FILE *out, const ParsedSQL *sql) {
             fprintf(out, "│   • %s\n", sql->col_defs[i]);
     }
 
-    /* WHERE 조건들. AND/OR 결합도 함께 표시. */
+    /* WHERE 조건들. 2번째 조건부터는 앞 결합자(AND/OR)도 함께 표시. */
     if (sql->where_count > 0) {
-        fprintf(out, "├─ where (%d", sql->where_count);
-        if (sql->where_count > 1 && sql->where_links != NULL) {
-            fprintf(out, ", links:");
-            for (int i = 0; i + 1 < sql->where_count; i++) fprintf(out, " %s", sql->where_links[i]);
-        } else if (sql->where_logic[0]) fprintf(out, ", %s", sql->where_logic);
-        fprintf(out, "):\n");
+        fprintf(out, "├─ where (%d):\n", sql->where_count);
         for (int i = 0; i < sql->where_count; i++) {
-            fprintf(out, "│   • %s %s %s\n",
-                    sql->where[i].column,
-                    sql->where[i].op,
-                    sql->where[i].value);
+            const char *link = where_link_at(sql, i);
+            if (link) {
+                fprintf(out, "│   • %s %s %s %s\n",
+                        link,
+                        sql->where[i].column,
+                        sql->where[i].op,
+                        sql->where[i].value);
+            } else {
+                fprintf(out, "│   • %s %s %s\n",
+                        sql->where[i].column,
+                        sql->where[i].op,
+                        sql->where[i].value);
+            }
         }
     }
 
