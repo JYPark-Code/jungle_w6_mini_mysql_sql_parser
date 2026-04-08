@@ -89,13 +89,14 @@ static char *read_file(const char *path) {
  *
  * 그 다음 execute() 로 실제 실행 (executor 가 storage 호출).
  *
- * ▣ json_mode 일 때의 처리
- *   --json 은 "기계가 읽을 출력" 모드. storage_select 가 stdout 에 찍는
- *   사람용 결과 표 ("id | name", "(N rows)") 가 같이 섞이면 JSON stream 이
- *   오염되어 server.py 같은 소비자가 raw 로 잡는다.
- *   해결: json_mode 인 동안 execute 호출 시 stdout 을 /dev/null 로 잠시
- *   리다이렉트 → 표 출력은 버려지고 JSON 한 줄만 깨끗하게 남는다.
- *   (storage 코드 변경 없이 main.c 에서 격리.)
+ * ▣ --json 모드의 출력 순서
+ *   1) print_json 이 한 줄짜리 JSON 출력
+ *   2) execute() → storage 가 SELECT 결과 표 (header + rows + "(N rows)")
+ *      를 stdout 에 출력
+ *
+ *   server.py 같은 소비자는 한 줄씩 읽으면서 JSON parse 가 성공하면 statement
+ *   로, 실패하면 직전 statement 의 결과 행으로 귀속시킨다 (server.py 참고).
+ *   덕분에 카드 뷰에서 SELECT 결과 표를 카드 안에 inline 표시할 수 있다.
  */
 static void process_stmt(const char *stmt, int debug_mode, int json_mode,
                          int tokens_mode, int format_mode) {
@@ -109,26 +110,7 @@ static void process_stmt(const char *stmt, int debug_mode, int json_mode,
         if (debug_mode)  print_ast(stdout, sql);
         if (json_mode)   print_json(stdout, sql);
         if (format_mode) print_format(stdout, sql);
-
-        if (json_mode) {
-            /* execute 동안 stdout 을 /dev/null 로 잠시 리다이렉트해서
-             * storage 의 표 출력이 JSON stream 에 섞이지 않게 한다. */
-            fflush(stdout);
-            int saved_stdout = dup(STDOUT_FILENO);
-            int devnull = open("/dev/null", O_WRONLY);
-            if (saved_stdout >= 0 && devnull >= 0) {
-                dup2(devnull, STDOUT_FILENO);
-                execute(sql);
-                fflush(stdout);
-                dup2(saved_stdout, STDOUT_FILENO);
-            } else {
-                execute(sql);   /* fallback: 리다이렉트 실패 시 그냥 실행 */
-            }
-            if (saved_stdout >= 0) close(saved_stdout);
-            if (devnull >= 0)      close(devnull);
-        } else {
-            execute(sql);
-        }
+        execute(sql);
     }
     free_parsed(sql);   /* 메모리 누수 방지 */
 }
