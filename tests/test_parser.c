@@ -466,6 +466,80 @@ static void test_json_null_safe(void) {
     g_pass++;
 }
 
+/* ─── --format SQL 정규화 직렬화 테스트 ──────────────────── */
+
+static char *capture_format(const char *sql_text) {
+    ParsedSQL *sql = parse_sql(sql_text);
+    char  *buf = NULL;
+    size_t len = 0;
+    FILE  *out = open_memstream(&buf, &len);
+    print_format(out, sql);
+    fclose(out);
+    free_parsed(sql);
+    return buf;
+}
+
+static void test_format_create(void) {
+    SECTION("FORMAT: CREATE");
+    char *s = capture_format("create   table   USERS  ( id INT , name VARCHAR )");
+    CHECK(strstr(s, "CREATE TABLE USERS (id INT, name VARCHAR);") != NULL,
+          "정규화된 CREATE");
+    free(s);
+}
+
+static void test_format_insert(void) {
+    SECTION("FORMAT: INSERT");
+    char *s = capture_format("INSERT INTO t (a, b) VALUES (1, 'hello world')");
+    CHECK(strstr(s, "INSERT INTO t (a, b) VALUES (1, 'hello world');") != NULL,
+          "정규화된 INSERT");
+    free(s);
+}
+
+static void test_format_select_full(void) {
+    SECTION("FORMAT: SELECT WHERE ORDER LIMIT");
+    char *s = capture_format(
+        "select id,name from users where age > 20 order by name desc limit 5");
+    CHECK(strstr(s, "SELECT id, name FROM users WHERE age > 20") != NULL,
+          "SELECT + WHERE 정규화");
+    CHECK(strstr(s, "ORDER BY name DESC") != NULL, "ORDER BY DESC");
+    CHECK(strstr(s, "LIMIT 5")            != NULL, "LIMIT");
+    free(s);
+}
+
+static void test_format_delete(void) {
+    SECTION("FORMAT: DELETE");
+    char *s = capture_format("delete from t where id = 1");
+    CHECK(strstr(s, "DELETE FROM t WHERE id = 1;") != NULL, "정규화된 DELETE");
+    free(s);
+}
+
+static void test_format_update(void) {
+    SECTION("FORMAT: UPDATE");
+    char *s = capture_format("update t set name = 'bob', age = 30 where id = 1");
+    CHECK(strstr(s, "UPDATE t SET name = 'bob', age = 30 WHERE id = 1;") != NULL,
+          "정규화된 UPDATE");
+    free(s);
+}
+
+static void test_format_round_trip(void) {
+    SECTION("FORMAT: round-trip (parse → format → parse 결과 동일)");
+    const char *original = "SELECT id FROM t WHERE x > 10";
+    char *formatted = capture_format(original);
+    ParsedSQL *re = parse_sql(formatted);
+    CHECK(re != NULL && re->type == QUERY_SELECT, "재파싱 결과 SELECT");
+    CHECK(strcmp(re->table, "t") == 0, "table 일치");
+    CHECK(re->where_count == 1 && strcmp(re->where[0].column, "x") == 0,
+          "WHERE 일치");
+    free_parsed(re);
+    free(formatted);
+}
+
+static void test_format_null_safe(void) {
+    SECTION("FORMAT: NULL safe");
+    print_format(NULL, NULL);
+    g_pass++;
+}
+
 int main(void) {
     test_create_table();
     test_create_all_types();
@@ -511,6 +585,14 @@ int main(void) {
     test_json_where_and();
     test_json_escape();
     test_json_null_safe();
+
+    test_format_create();
+    test_format_insert();
+    test_format_select_full();
+    test_format_delete();
+    test_format_update();
+    test_format_round_trip();
+    test_format_null_safe();
 
     fprintf(stderr, "\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;

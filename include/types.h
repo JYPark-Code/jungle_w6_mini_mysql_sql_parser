@@ -98,6 +98,9 @@ void       print_ast(FILE *out, const ParsedSQL *sql);
 /* json_out.c — --json 플래그용 JSON 직렬화 */
 void       print_json(FILE *out, const ParsedSQL *sql);
 
+/* sql_format.c — --format 플래그용 정규화 SQL 직렬화 */
+void       print_format(FILE *out, const ParsedSQL *sql);
+
 /* executor.c */
 void       execute(ParsedSQL *sql);
 
