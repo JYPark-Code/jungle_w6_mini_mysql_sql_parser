@@ -66,14 +66,16 @@ MP1 머지 후 `git pull origin dev2` 로 새 `types.h` 받아온 뒤 시작.
 
 ## 역할별 담당 (3명)
 
-### 🅐 석제 — RowSet 인프라
+### 🅐 지용 — RowSet 인프라
 **목표:** storage 가 결과를 메모리 데이터로 반환하는 새 함수 도입.
 
+**브랜치:** `feature/p1-rowset`
+
 **작업 파일:**
-- `include/types.h` — RowSet 구조체 정의 (지용 MP1 에 같이 들어감, 사전 협의 필요)
+- `include/types.h` — RowSet 구조체 정의 (MP1 에 같이 들어감)
 - `src/storage.c` — `storage_select_result`, `print_rowset`, `rowset_free` 신설
 - `src/storage.c` — 기존 `storage_select` 를 wrapper 로 리팩토링
-- `tests/test_storage_select_result.c` — 새 단위 테스트 (선택, Makefile 통합)
+- `tests/test_storage_select_result.c` — 새 단위 테스트 + Makefile 통합
 
 **핵심 동작:**
 ```c
@@ -102,14 +104,17 @@ int storage_select(const char *table, ParsedSQL *sql) {
 - [ ] 새 RowSet 단위 테스트 추가
 - [ ] valgrind 누수 0
 
-### 🅑 지용 — Parser stop set + N-ary WHERE
+### 🅑 석제 — Parser stop set + N-ary WHERE
 **목표:**
 1. `parse_select` 가 stop set (`)`, `;` 등) 을 만나면 멈추도록 → 향후 subquery / 괄호 그룹화 대비
 2. `parse_where` 를 N-ary 로 확장 (현재 1~2 조건 → N개)
 
+**브랜치:** `feature/p1-parser-stop-set`
+
 **작업 파일:**
 - `src/parser.c` — `parse_select`, `parse_where` 확장
-- `include/types.h` — `WhereClause` 결합자 배열 (필요 시 — 협의)
+- `src/ast_print.c` / `src/json_out.c` / `src/sql_format.c` — N-ary 출력 갱신
+- `include/types.h` — 지용 MP1 에 결합자 배열 같이 들어감 (사전 협의 필수)
 - `tests/test_parser.c` — 3개 이상 조건, 혼합 결합 케이스
 
 **현재 한계:**
@@ -134,7 +139,9 @@ WHERE a = 1 AND b = 2 OR c = 3                     // ✅ (왼→오 평가, 그
 - [ ] valgrind 누수 0
 
 ### 🅒 원우 — UPDATE/DELETE 복합 WHERE 통합
-**목표:** 지용의 N-ary WHERE 가 storage_update / storage_delete 에서 정상 평가.
+**목표:** 석제의 N-ary WHERE 가 storage_update / storage_delete 에서 정상 평가.
+
+**브랜치:** `feature/p1-compound-where`
 
 **작업 파일:**
 - `src/storage.c` — `storage_update`, `storage_delete`, 그리고 공용 `evaluate_where_clause`

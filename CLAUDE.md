@@ -30,7 +30,7 @@
 
 ## Phase 1 작업 4가지 (3명 분업)
 
-### A. RowSet 인프라 (석제) ⭐ 핵심
+### A. RowSet 인프라 (지용) ⭐ 핵심
 - `include/types.h` 에 `RowSet` 구조체 정의 (행/컬럼 메모리 표현)
 - `storage_select_result(table, sql, RowSet **out)` 신설
 - `print_rowset(FILE*, RowSet*)` helper
@@ -40,7 +40,7 @@
 - 단위 테스트: RowSet 직접 검증 (stdout 캡쳐 hack 불필요)
 - **외부 동작 변화 0** — 모든 기존 테스트 통과해야 함
 
-### B. Parser stop set + N-ary WHERE (지용)
+### B. Parser stop set + N-ary WHERE (석제)
 - `parse_select` 에 stop set 도입 (`)`, `;` 같은 곳에서 중단)
   → 향후 subquery / 괄호 그룹화 대비
 - `parse_where` 를 N-ary 로 확장 (현재는 1~2 조건만)
@@ -56,10 +56,10 @@
 - 단위 테스트: 복합 WHERE 케이스 추가
 - 인터페이스 계약 준수 (storage_* 시그니처는 그대로 유지)
 
-### D. 인터페이스 계약 정리 (지용 + 셋 다 협의)
+### D. 인터페이스 계약 정리 (지용, MP1 먼저)
 - `include/types.h` 에:
-  - `RowSet` 구조체 (석제 작업 구조 받기)
-  - `WhereClause` 의 N-ary 표현 (배열 확장은 이미 가능, 결합자 배열 필드 추가 검토)
+  - `RowSet` 구조체 (지용 본인 RowSet 작업과 같이)
+  - `WhereClause` / `ParsedSQL` 의 N-ary 결합자 표현 (석제와 협의)
   - 새 함수 선언: `storage_select_result`, `rowset_free`, `print_rowset`
 - 변경 시점: **Phase 1 시작 전 지용이 한 번에 머지** → 그 후 석제/원우 각자 작업
 - 한 번 머지된 후엔 **시그니처 변경 금지** (1주차 룰 동일)
@@ -74,19 +74,19 @@
    ┌──────────┴──────────┐
    ↓          ↓          ↓
 [A. RowSet]  [B. Parser]  [C. UPDATE/DELETE]
- (석제)       (지용)        (원우)
+ (지용)       (석제)        (원우)
    └──────────┬──────────┘
               ↓
         [통합 + 회귀 검증]
               ↓
-        [dev2 → main2]  *2주차 main 정책은 별도*
+        [dev2 → main]
 ```
 
 ---
 
 ## 지용님 담당
-1. **인터페이스 계약 PR 먼저 머지** (D)
-2. **Parser stop set + N-ary WHERE** (B)
+1. **인터페이스 계약 PR 먼저 머지** (D) — `feature/p1-interface-contract`
+2. **RowSet 인프라** (A) — `feature/p1-rowset`
 3. **PM 역할**: 석제/원우 PR 리뷰, 머지 결정, 통합 책임
 4. CI / PR 템플릿 / 머지 워크플로 1주차와 동일 운영
 
@@ -100,9 +100,9 @@
 - [ ] 석제/원우에게 alert + 본인 브랜치 rebase
 
 ### MP2 — 각자 PR 머지
-- [ ] 지용 — Parser stop set + N-ary WHERE
-- [ ] 석제 — RowSet 인프라
-- [ ] 원우 — UPDATE/DELETE 복합 WHERE
+- [ ] 지용 — RowSet 인프라 (`feature/p1-rowset`)
+- [ ] 석제 — Parser stop set + N-ary WHERE (`feature/p1-parser-stop-set`)
+- [ ] 원우 — UPDATE/DELETE 복합 WHERE (`feature/p1-compound-where`)
 
 각 PR 은 1주차와 동일 워크플로:
 - CI green 필수
