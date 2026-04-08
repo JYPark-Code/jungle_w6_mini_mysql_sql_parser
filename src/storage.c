@@ -1,3 +1,28 @@
+/* storage.c — 파일 기반 테이블을 읽고 SELECT 결과를 만드는 부품 (석제)
+ * ============================================================================
+ *
+ * 이 파일이 하는 일
+ *   data/<table>.schema 와 data/<table>.csv 를 읽어서 SELECT 를 실제로 수행한다.
+ *   parser 가 만든 ParsedSQL 을 바탕으로 WHERE / ORDER BY / LIMIT / COUNT(*) 를 처리하고
+ *   최종 결과를 화면에 출력한다.
+ *
+ * 왜 필요한가?
+ *   parser 는 "문장을 구조로 바꾸는 일"만 하고,
+ *   executor 는 "어떤 storage 함수를 부를지"만 결정한다.
+ *   그래서 실제 파일 입출력, 행 비교, 조건 필터링은 이 파일이 전담한다.
+ *
+ * 큰 흐름
+ *   1) schema 파일을 읽어 컬럼 이름과 타입을 메모리에 올린다.
+ *   2) csv 파일을 읽어 각 행을 셀 배열로 바꾼다.
+ *   3) WHERE / AND / OR / LIKE 로 행을 걸러낸다.
+ *   4) ORDER BY / LIMIT / COUNT(*) 를 적용한다.
+ *   5) 필요한 컬럼만 골라 최종 결과를 출력한다.
+ *
+ * 현재 상태
+ *   SELECT 와 CREATE 의 최소 파일 처리는 구현되어 있고,
+ *   INSERT / UPDATE / DELETE 는 아직 스텁으로 남아 있다.
+ * ============================================================================
+ */
 #include "types.h"
 
 #include <ctype.h>
@@ -36,7 +61,13 @@ typedef struct {
     int capacity;
 } RowSelection;
 
-/* Small local strdup replacement to keep allocations explicit in C. */
+/* ============================================================================
+ * 1단계: 문자열 / 메모리 보조 함수
+ *   schema, csv, WHERE 값을 다루기 전에 공통으로 쓰는 유틸리티들.
+ * ============================================================================
+ */
+
+/* duplicate_string: 전달받은 문자열을 새 메모리에 복사해 독립적으로 보관한다. */
 static char *duplicate_string(const char *source)
 {
     size_t length;
@@ -56,7 +87,7 @@ static char *duplicate_string(const char *source)
     return copy;
 }
 
-/* Trim leading and trailing whitespace so schema and CSV values compare cleanly. */
+/* trim_in_place: 문자열 양끝 공백을 제거해 비교 전에 값을 정리한다. */
 static void trim_in_place(char *text)
 {
     size_t start;
@@ -88,6 +119,7 @@ static void trim_in_place(char *text)
     }
 }
 
+/* equals_ignore_case: 대소문자 구분 없이 두 문자열이 같은지 확인한다. */
 static int equals_ignore_case(const char *left, const char *right)
 {
     unsigned char lhs;
@@ -110,7 +142,7 @@ static int equals_ignore_case(const char *left, const char *right)
     return *left == '\0' && *right == '\0';
 }
 
-/* COUNT ( * ) 같은 표기도 허용하려고 공백을 걷어낸 뒤 비교한다. */
+/* normalized_equals_ignore_case: 공백을 제거한 뒤 대소문자 구분 없이 두 문자열을 비교한다. */
 static int normalized_equals_ignore_case(const char *left, const char *right)
 {
     char left_buffer[256];
@@ -139,6 +171,7 @@ static int normalized_equals_ignore_case(const char *left, const char *right)
     return strcmp(left_buffer, right_buffer) == 0;
 }
 
+/* strip_quotes: 문자열 양끝의 따옴표를 제거해 실제 값만 꺼낸다. */
 static void strip_quotes(const char *input, char *output, size_t output_size)
 {
     size_t length;
@@ -166,6 +199,7 @@ static void strip_quotes(const char *input, char *output, size_t output_size)
     output[copy_length] = '\0';
 }
 
+/* ensure_data_dir: data 디렉토리가 없으면 생성하고 있으면 그대로 사용한다. */
 static int ensure_data_dir(void)
 {
     if (MKDIR(DATA_DIR) == 0) {
@@ -180,6 +214,7 @@ static int ensure_data_dir(void)
     return 1;
 }
 
+/* build_data_path: 테이블 이름과 확장자로 실제 데이터 파일 경로를 만든다. */
 static int build_data_path(char *buffer, size_t size, const char *table, const char *extension)
 {
     int written;
@@ -193,6 +228,7 @@ static int build_data_path(char *buffer, size_t size, const char *table, const c
     return 0;
 }
 
+/* parse_column_type: 스키마에 적힌 타입 이름을 내부 ColumnType 값으로 변환한다. */
 static ColumnType parse_column_type(const char *type_name)
 {
     if (equals_ignore_case(type_name, "INT")) {
@@ -217,6 +253,7 @@ static ColumnType parse_column_type(const char *type_name)
     return TYPE_VARCHAR;
 }
 
+/* free_schema: 스키마 로딩에 사용한 동적 메모리를 모두 해제한다. */
 static void free_schema(TableSchema *schema)
 {
     int index;
@@ -236,6 +273,7 @@ static void free_schema(TableSchema *schema)
     schema->count = 0;
 }
 
+/* free_rows: CSV에서 읽어온 모든 행과 셀 메모리를 해제한다. */
 static void free_rows(TableRows *rows)
 {
     int row_index;
@@ -261,6 +299,7 @@ static void free_rows(TableRows *rows)
     rows->capacity = 0;
 }
 
+/* free_selection: 조건에 맞게 모은 행 포인터 배열 메모리를 해제한다. */
 static void free_selection(RowSelection *selection)
 {
     if (selection == NULL) {
@@ -273,7 +312,13 @@ static void free_selection(RowSelection *selection)
     selection->capacity = 0;
 }
 
-/* Load the schema into column names and types so SELECT can stay data-driven. */
+/* ============================================================================
+ * 2단계: 스키마 / 데이터 파일 로딩
+ *   테이블 정의와 실제 행 데이터를 디스크에서 읽어 메모리 구조로 바꾼다.
+ * ============================================================================
+ */
+
+/* append_schema_column: 스키마 배열에 컬럼 이름과 타입을 한 칸씩 추가한다. */
 static int append_schema_column(TableSchema *schema, const char *name, ColumnType type)
 {
     char **new_names;
@@ -302,6 +347,9 @@ static int append_schema_column(TableSchema *schema, const char *name, ColumnTyp
     return 0;
 }
 
+/* load_schema: 테이블의 .schema 파일을 읽어 컬럼 구조를 메모리에 올린다.
+ *   컬럼 이름과 타입을 순서대로 적재해서 이후 SELECT 가 데이터 주도적으로 동작하게 만든다.
+ */
 static int load_schema(const char *table, TableSchema *schema)
 {
     char path[256];
@@ -371,6 +419,7 @@ static int load_schema(const char *table, TableSchema *schema)
     return 0;
 }
 
+/* parse_boolean: 불리언 문자열을 0 또는 1 정수값으로 변환한다. */
 static int parse_boolean(const char *value, int *out)
 {
     if (equals_ignore_case(value, "true") || strcmp(value, "1") == 0) {
@@ -384,7 +433,10 @@ static int parse_boolean(const char *value, int *out)
     return 1;
 }
 
-/* Parse one CSV row into an array of heap-allocated cells. */
+/* split_csv_line: CSV 한 줄을 셀 배열로 분해한다.
+ *   쉼표와 따옴표를 처리해서 한 줄 텍스트를 컬럼 값 목록으로 바꾸고,
+ *   각 셀은 이후에도 안전하게 쓰도록 힙 메모리에 복사해 둔다.
+ */
 static int split_csv_line(const char *line, char ***values_out, int *count_out)
 {
     char **values;
@@ -496,6 +548,7 @@ fail:
     return 1;
 }
 
+/* append_row: 파싱한 한 행을 전체 행 목록에 추가한다. */
 static int append_row(TableRows *rows, char **values)
 {
     char ***new_rows;
@@ -513,6 +566,10 @@ static int append_row(TableRows *rows, char **values)
     return 0;
 }
 
+/* load_rows: 테이블의 .csv 파일을 읽어 모든 행을 메모리에 적재한다.
+ *   한 줄씩 split_csv_line 으로 파싱한 뒤 스키마 컬럼 수와 맞는지 검사한다.
+ *   이후 필터링과 정렬은 이 메모리 배열을 기준으로 진행된다.
+ */
 static int load_rows(const char *table, const TableSchema *schema, TableRows *rows)
 {
     char path[256];
@@ -573,6 +630,7 @@ static int load_rows(const char *table, const TableSchema *schema, TableRows *ro
     return 0;
 }
 
+/* find_column_index: 컬럼 이름에 해당하는 스키마 인덱스를 찾는다. */
 static int find_column_index(const TableSchema *schema, const char *column)
 {
     int index;
@@ -586,7 +644,16 @@ static int find_column_index(const TableSchema *schema, const char *column)
     return -1;
 }
 
-/* Compare row values using the declared column type when possible. */
+/* ============================================================================
+ * 3단계: 값 비교와 WHERE 조건 평가
+ *   컬럼 타입에 맞춰 값을 비교하고, 여러 조건을 AND / OR 로 합친다.
+ * ============================================================================
+ */
+
+/* compare_values: 컬럼 타입에 맞춰 두 값을 비교한다.
+ *   INT / FLOAT / BOOLEAN 은 실제 타입으로 바꿔 비교하고,
+ *   그 외 타입은 문자열 비교로 처리한다.
+ */
 static int compare_values(ColumnType type, const char *left, const char *right, int *comparison)
 {
     char lhs[256];
@@ -645,7 +712,10 @@ static int compare_values(ColumnType type, const char *left, const char *right, 
     return 0;
 }
 
-/* Support SQL LIKE with % and _ wildcards. */
+/* like_match_recursive: LIKE 의 % 와 _ 와일드카드를 재귀적으로 검사한다.
+ *   % 는 길이 제한 없는 임의 문자열,
+ *   _ 는 정확히 한 글자를 의미하도록 처리한다.
+ */
 static int like_match_recursive(const char *text, const char *pattern)
 {
     unsigned char text_char;
@@ -691,6 +761,10 @@ static int like_match_recursive(const char *text, const char *pattern)
     return like_match_recursive(text + 1, pattern + 1);
 }
 
+/* evaluate_where_clause: 단일 WHERE 조건 하나가 현재 행과 맞는지 판단한다.
+ *   컬럼 인덱스를 찾고, 연산자에 맞춰 비교한 뒤,
+ *   현재 행이 조건을 통과하는지 matched 에 기록한다.
+ */
 static int evaluate_where_clause(const TableSchema *schema, char **row, const WhereClause *clause, int *matched)
 {
     int column_index;
@@ -735,7 +809,10 @@ static int evaluate_where_clause(const TableSchema *schema, char **row, const Wh
     return 0;
 }
 
-/* Apply WHERE clauses with the parser-provided AND/OR relationship. */
+/* row_matches: 여러 WHERE 조건을 AND 또는 OR 규칙으로 합쳐 평가한다.
+ *   WHERE 가 없으면 전체 행을 통과시키고,
+ *   중간에 결과가 확정되면 바로 빠져나와 불필요한 비교를 줄인다.
+ */
 static int row_matches(const ParsedSQL *sql, const TableSchema *schema, char **row, int *matches)
 {
     int index;
@@ -771,6 +848,7 @@ static int row_matches(const ParsedSQL *sql, const TableSchema *schema, char **r
     return 0;
 }
 
+/* append_selection: 조건을 통과한 행을 결과 목록에 추가한다. */
 static int append_selection(RowSelection *selection, char **row)
 {
     char ***new_rows;
@@ -788,6 +866,10 @@ static int append_selection(RowSelection *selection, char **row)
     return 0;
 }
 
+/* collect_matching_rows: 전체 행 중 WHERE 조건을 만족하는 행만 골라 모은다.
+ *   원본 행 전체를 복사하지 않고 포인터만 결과 목록에 담아서,
+ *   필터링 비용을 줄이면서 다음 단계 정렬로 넘긴다.
+ */
 static int collect_matching_rows(const ParsedSQL *sql, const TableSchema *schema, const TableRows *rows, RowSelection *selection)
 {
     int row_index;
@@ -816,6 +898,13 @@ static int collect_matching_rows(const ParsedSQL *sql, const TableSchema *schema
     return 0;
 }
 
+/* ============================================================================
+ * 4단계: 정렬 / 컬럼 선택 / 결과 출력
+ *   필터링된 행을 ORDER BY 로 정렬하고, 필요한 컬럼만 골라 화면에 출력한다.
+ * ============================================================================
+ */
+
+/* compare_rows_for_order: ORDER BY 기준 컬럼 값으로 두 행의 순서를 비교한다. */
 static int compare_rows_for_order(const TableSchema *schema, int column_index, char **left, char **right)
 {
     int comparison;
@@ -827,6 +916,10 @@ static int compare_rows_for_order(const TableSchema *schema, int column_index, c
     return comparison;
 }
 
+/* sort_selection: 선택된 행들을 ORDER BY 조건에 맞춰 정렬한다.
+ *   ORDER BY 가 없으면 원래 순서를 유지하고,
+ *   ASC / DESC 여부에 따라 비교 결과 방향만 바꿔 정렬한다.
+ */
 static int sort_selection(const ParsedSQL *sql, const TableSchema *schema, RowSelection *selection)
 {
     int order_index;
@@ -865,12 +958,14 @@ static int sort_selection(const ParsedSQL *sql, const TableSchema *schema, RowSe
     return 0;
 }
 
+/* is_select_all: 현재 SELECT가 전체 컬럼 조회인지 확인한다. */
 static int is_select_all(const ParsedSQL *sql)
 {
     return sql->col_count <= 0 ||
            (sql->col_count == 1 && sql->columns != NULL && strcmp(sql->columns[0], "*") == 0);
 }
 
+/* is_count_star: 현재 SELECT가 COUNT(*) 집계인지 확인한다. */
 static int is_count_star(const ParsedSQL *sql)
 {
     return sql->col_count == 1 &&
@@ -878,6 +973,10 @@ static int is_count_star(const ParsedSQL *sql)
            normalized_equals_ignore_case(sql->columns[0], "COUNT(*)");
 }
 
+/* resolve_selected_columns: 출력할 컬럼 이름을 실제 스키마 인덱스로 변환한다.
+ *   SELECT * 이면 전체 컬럼 인덱스를 만들고,
+ *   컬럼 지정 조회면 이름 검증까지 함께 수행한다.
+ */
 static int resolve_selected_columns(const ParsedSQL *sql, const TableSchema *schema, int **indices_out, int *count_out)
 {
     int *indices;
@@ -915,7 +1014,10 @@ static int resolve_selected_columns(const ParsedSQL *sql, const TableSchema *sch
     return 0;
 }
 
-/* Print only the requested columns after filters and sorting have been applied. */
+/* print_selection: 필터와 정렬이 끝난 결과를 LIMIT 에 맞춰 출력한다.
+ *   COUNT(*) 인 경우에는 행 수만 출력하고,
+ *   그 외에는 헤더와 선택된 컬럼 값을 순서대로 화면에 찍는다.
+ */
 static int print_selection(const ParsedSQL *sql, const TableSchema *schema, const RowSelection *selection)
 {
     int *selected_indices;
@@ -961,6 +1063,16 @@ static int print_selection(const ParsedSQL *sql, const TableSchema *schema, cons
     return 0;
 }
 
+/* ============================================================================
+ * 5단계: 외부에서 호출하는 storage 인터페이스
+ *   executor 가 호출하는 실제 진입점들.
+ * ============================================================================
+ */
+
+/* storage_select: SELECT 의 전체 실행 흐름을 담당한다.
+ *   스키마 로딩 -> 행 로딩 -> WHERE 필터 -> ORDER BY -> 출력 순서로 진행한다.
+ *   중간에 실패하면 그 시점까지 확보한 메모리를 정리하고 에러를 반환한다.
+ */
 int storage_select(const char *table, ParsedSQL *sql)
 {
     TableSchema schema;
@@ -1002,6 +1114,7 @@ int storage_select(const char *table, ParsedSQL *sql)
     return status;
 }
 
+/* storage_insert: select 브랜치에서는 INSERT 미구현 상태를 반환한다. */
 int storage_insert(const char *table, char **columns, char **values, int count)
 {
     (void)table;
@@ -1012,6 +1125,7 @@ int storage_insert(const char *table, char **columns, char **values, int count)
     return 1;
 }
 
+/* storage_delete: select 브랜치에서는 DELETE 미구현 상태를 반환한다. */
 int storage_delete(const char *table, WhereClause *where, int where_count)
 {
     (void)table;
@@ -1021,6 +1135,7 @@ int storage_delete(const char *table, WhereClause *where, int where_count)
     return 1;
 }
 
+/* storage_update: select 브랜치에서는 UPDATE 미구현 상태를 반환한다. */
 int storage_update(const char *table, SetClause *set, int set_count, WhereClause *where, int where_count)
 {
     (void)table;
@@ -1032,7 +1147,10 @@ int storage_update(const char *table, SetClause *set, int set_count, WhereClause
     return 1;
 }
 
-/* CREATE is kept minimal so parser/main integration can build against the full interface. */
+/* storage_create: 최소한의 테이블 스키마 파일과 데이터 파일을 생성한다.
+ *   1주차에서는 parser / executor 연결이 깨지지 않도록
+ *   schema 파일과 빈 csv 파일만 만들어 두는 역할만 맡는다.
+ */
 int storage_create(const char *table, char **col_defs, int count)
 {
     char schema_path[256];
