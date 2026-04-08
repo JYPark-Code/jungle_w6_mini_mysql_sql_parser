@@ -100,6 +100,26 @@ void       free_parsed(ParsedSQL *sql);     // parser.c (지용)
 
 ---
 
+## storage.c 인터페이스 계약
+storage.c 는 1주차에는 파일 기반(CSV/스키마 텍스트)으로 구현하지만,
+2주차에 B+트리 + 해시 인덱스로 내부를 통째로 교체할 예정이다.
+
+**절대 규칙:**
+- types.h 에 선언된 storage_* 함수 시그니처는 **절대 변경 금지**
+  (반환 타입, 파라미터 타입/순서/개수 모두 고정)
+- 내부 구현이 완전히 바뀌어도 호출부(executor.c, parser.c) 는 영향받지 않아야 한다
+- storage 내부 구조체/헬퍼 함수는 storage.c 안에 static 으로만 둘 것
+- "내가 구현 중에 시그니처 살짝만 바꾸면 편할 텐데..." → 안 됨. 지용님 협의 필수.
+
+고정된 시그니처:
+int storage_insert(const char *table, char **columns, char **values, int count);
+int storage_select(const char *table, ParsedSQL *sql);
+int storage_delete(const char *table, WhereClause *where, int where_count);
+int storage_update(const char *table, SetClause *set, int set_count, WhereClause *where, int where_count);
+int storage_create(const char *table, char **col_defs, int count);
+
+---
+
 ## 역할별 담당 기능
 
 ### A — SELECT 담당

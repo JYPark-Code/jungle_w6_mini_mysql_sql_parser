@@ -12,8 +12,25 @@
 - SQL Parser 코어 (토크나이저 + ParsedSQL 구조체)
 - CREATE TABLE
 - --json 출력 플래그
+- --debug 플래그 (AST 파싱 트리 시각화)
 - Python 중계 서버 (server.py, 오후)
 - HTML 뷰어 (index.html, 오후)
+
+---
+
+## 타입 시스템 (ColumnType)
+- 지원 타입: INT, VARCHAR, FLOAT, BOOLEAN, DATE, DATETIME
+- DATE: 'YYYY-MM-DD' 문자열 비교로 처리 (별도 구조체 없음)
+- DATETIME: 1주차에는 파싱만 받고, 실제 비교/저장 구현은 **2주차로 이관**
+- 정의 위치: include/type.h 의 `ColumnType` enum, `ColDef` 구조체
+
+---
+
+## AST (--debug 플래그)
+- ParsedSQL 을 트리 형태로 시각화하는 디버그 출력 모드
+- 파서 검증 + 발표 시 "어떻게 파싱했는지" 보여주는 용도
+- `./minisql --debug query.sql` 형태로 동작
+- 출력 예시: QueryType / table / columns / where / orderby 를 들여쓰기 트리로
 
 ---
 
@@ -63,6 +80,25 @@
 4. DELETE → SELECT로 삭제 확인 (30초)
 5. HTML 뷰어 시연 (여유 있으면, 30초)
 6. 테스트 케이스 실행 결과 (30초)
+
+---
+
+## storage.c 인터페이스 설계 원칙
+1주차 storage.c 는 **파일 기반 (CSV/스키마 텍스트)** 으로 구현하지만,
+2주차에 **B+트리 + 해시 인덱스** 로 내부 구현을 교체할 예정.
+- 함수 시그니처는 절대 변경하지 않는다 (types.h 의 storage_* 선언 고정)
+- 호출부 (executor.c, parser.c) 는 storage 내부 구조를 알면 안 된다
+- 1주차 코드는 "교체 가능한 1차 백엔드" 라는 전제로 작성
+- 새 헬퍼 함수가 필요하면 storage.c 내부 static 으로만 둘 것
+
+---
+
+## 2주차 방향
+- **B+트리** 도입: 테이블 본체 저장 + range scan 최적화
+- **해시 인덱스**: PK / 자주 쓰는 WHERE 컬럼 lookup 가속
+- DATETIME 타입 실제 구현 (비교/정렬/저장 포맷 결정)
+- 트랜잭션/로그는 시간 남으면 검토
+- storage.c 인터페이스를 깨지 않고 내부만 교체하는 것이 핵심 목표
 
 ---
 

@@ -11,6 +11,24 @@ typedef enum {
     QUERY_UNKNOWN
 } QueryType;
 
+/* ─── 컬럼 타입 ─────────────────────────────── */
+/* DATE는 'YYYY-MM-DD' 문자열 비교로 처리.
+ * DATETIME 은 1주차에는 파싱만 받고, 실제 구현은 2주차로 이관. */
+typedef enum {
+    TYPE_INT,
+    TYPE_VARCHAR,
+    TYPE_FLOAT,
+    TYPE_BOOLEAN,
+    TYPE_DATE,
+    TYPE_DATETIME
+} ColumnType;
+
+/* ─── 컬럼 정의 (CREATE TABLE 용) ───────────── */
+typedef struct {
+    char       name[64];
+    ColumnType type;
+} ColDef;
+
 /* ─── WHERE 조건 ─────────────────────────────── */
 typedef struct {
     char column[64];
