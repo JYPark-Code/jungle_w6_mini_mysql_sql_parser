@@ -189,28 +189,52 @@
     background: var(--bg);
     border: 1px solid var(--border);
     border-radius: 4px;
-    padding: 10px 12px;
+    padding: 0;
     font-family: "JetBrains Mono", "Menlo", monospace;
     font-size: 13px;
-    line-height: 1.6;
     color: var(--text);
     overflow-x: auto;
-    white-space: pre;
   }
-  /* 결과 표의 헤더 줄 강조 (첫 줄) */
-  .stmt-result-table .result-header {
+  /* 진짜 HTML 테이블 — 사각형 그리드 */
+  .stmt-result-table table.grid {
+    border-collapse: collapse;
+    width: 100%;
+    font-size: 13px;
+  }
+  .stmt-result-table table.grid th,
+  .stmt-result-table table.grid td {
+    border: 1px solid var(--border);
+    padding: 6px 12px;
+    text-align: left;
+    white-space: nowrap;
+    vertical-align: middle;
+  }
+  .stmt-result-table table.grid thead th {
+    background: rgba(189, 147, 249, 0.12);
     color: var(--accent);
-    font-weight: 600;
-    border-bottom: 1px solid var(--border);
-    padding-bottom: 4px;
-    margin-bottom: 4px;
-    display: block;
+    font-weight: 700;
+    letter-spacing: 0.3px;
+    border-bottom: 2px solid var(--accent);
+    position: sticky;
+    top: 0;
   }
-  .stmt-result-table .result-footer {
+  .stmt-result-table table.grid tbody tr:nth-child(even) {
+    background: rgba(255, 255, 255, 0.02);
+  }
+  .stmt-result-table table.grid tbody tr:hover {
+    background: rgba(80, 250, 123, 0.08);
+  }
+  .stmt-result-table table.grid tbody td.empty-row {
+    color: var(--muted);
+    font-style: italic;
+    text-align: center;
+  }
+  .stmt-result-footer {
     color: var(--muted);
     font-size: 11px;
-    margin-top: 4px;
-    display: block;
+    padding: 6px 12px;
+    border-top: 1px solid var(--border);
+    background: rgba(0, 0, 0, 0.15);
   }
 
   /* 토글 스위치 */
@@ -466,42 +490,78 @@ DELETE FROM users WHERE id = 1;</textarea>
     );
   }
 
-  /* SELECT 결과 표 (server.py 의 _result 텍스트) 를 HTML 로 꾸미기.
+  /* SELECT 결과 표 (server.py 의 _result 텍스트) 를 진짜 HTML <table> 로 변환.
    *
-   *   id | name           ← 첫 줄: 헤더 (강조)
-   *   1 | alice           ← 데이터
+   *   id | name           ← 첫 줄: 헤더 → <thead>
+   *   1 | alice           ← 데이터 → <tbody>
    *   2 | bob
-   *   (2 rows)            ← 마지막 줄: 푸터 (회색)
+   *   (2 rows)            ← 마지막 줄: 푸터 → 하단 메타 줄
+   *
+   * storage.c 의 print_rowset 출력 형식을 가정 (' | ' 구분자, 마지막 "(N rows)").
+   * 단일 값 (예: COUNT(*) → "2") 처럼 구분자 없는 경우도 단일 컬럼 표로 렌더한다.
    */
+  function splitRow(line) {
+    /* ' | ' 정확 구분 — 데이터에 파이프가 들어있어도 공백 사이만 끊는다. */
+    return line.split(/\s\|\s/);
+  }
+
   function renderResultTable(rawText) {
     if (!rawText) return '';
-    const lines = rawText.split('\n');
+    const lines = rawText.split('\n').filter(function (l) { return l.length > 0; });
     if (lines.length === 0) return '';
 
-    let header = '';
     let footer = '';
     let bodyLines = lines.slice();
 
-    // 첫 줄 = 헤더
-    if (bodyLines.length > 0) {
-      header = bodyLines.shift();
-    }
-    // 마지막 줄이 "(N rows)" 형태면 푸터
+    // 마지막 줄이 "(N rows)" 형태면 푸터로 분리
     if (bodyLines.length > 0 && /^\(\d+ rows?\)$/.test(bodyLines[bodyLines.length - 1])) {
       footer = bodyLines.pop();
     }
 
+    // 헤더 = 첫 줄
+    if (bodyLines.length === 0) {
+      // 헤더조차 없으면 빈 결과 — 푸터만 표시
+      return '<div class="stmt-result-wrap">' +
+               '<div class="stmt-result-label">▼ 결과</div>' +
+               '<div class="stmt-result-table">' +
+                 (footer ? '<div class="stmt-result-footer">' + esc(footer) + '</div>' : '') +
+               '</div>' +
+             '</div>';
+    }
+
+    const headerCells = splitRow(bodyLines.shift());
+    const dataRows = bodyLines.map(splitRow);
+
     let html = '<div class="stmt-result-wrap">' +
                  '<div class="stmt-result-label">▼ 결과</div>' +
-                 '<div class="stmt-result-table">';
-    if (header) {
-      html += '<span class="result-header">' + esc(header) + '</span>';
+                 '<div class="stmt-result-table">' +
+                   '<table class="grid">';
+
+    // <thead>
+    html += '<thead><tr>';
+    for (const h of headerCells) {
+      html += '<th>' + esc(h) + '</th>';
     }
-    if (bodyLines.length > 0) {
-      html += esc(bodyLines.join('\n'));
+    html += '</tr></thead>';
+
+    // <tbody>
+    html += '<tbody>';
+    if (dataRows.length === 0) {
+      html += '<tr><td class="empty-row" colspan="' + headerCells.length + '">(0 rows)</td></tr>';
+    } else {
+      for (const row of dataRows) {
+        html += '<tr>';
+        for (let i = 0; i < headerCells.length; i++) {
+          const cell = i < row.length ? row[i] : '';
+          html += '<td>' + esc(cell) + '</td>';
+        }
+        html += '</tr>';
+      }
     }
+    html += '</tbody></table>';
+
     if (footer) {
-      html += '<span class="result-footer">' + esc(footer) + '</span>';
+      html += '<div class="stmt-result-footer">' + esc(footer) + '</div>';
     }
     html += '</div></div>';
     return html;
