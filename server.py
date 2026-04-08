@@ -99,18 +99,57 @@ def run_sqlparser(sql: str) -> dict:
         except OSError:
             pass
 
-    # 5) stdout 의 각 줄을 JSON 으로 파싱.
-    #    sqlparser 는 statement 한 개당 한 줄의 JSON 을 출력하도록 설계됨.
+    # 5) stdout 분리 — JSON 줄과 SELECT 결과 표 줄이 섞여 들어온다.
+    #
+    #    sqlparser --json 출력 형태:
+    #      {"type":"CREATE",...}              ← JSON 줄  (statement 시작)
+    #      {"type":"INSERT",...}              ← JSON 줄
+    #      {"type":"SELECT",...}              ← JSON 줄
+    #      id | name                          ← 직전 SELECT 결과 표 시작
+    #      1 | alice
+    #      2 | bob
+    #      (2 rows)
+    #      {"type":"DELETE",...}              ← 다음 JSON 줄
+    #
+    #    한 줄씩 읽으면서:
+    #      - JSON parse 성공 → statement 추가
+    #      - JSON parse 실패 → 직전 statement 의 _result 에 누적
     statements = []
+    pending_result_lines = []
+
+    def flush_result():
+        """누적된 결과 줄을 직전 statement 에 attach."""
+        if statements and pending_result_lines:
+            # 빈 줄 끝부분 제거
+            text = "\n".join(pending_result_lines).rstrip()
+            if text:
+                statements[-1]["_result"] = text
+
     for line in proc.stdout.splitlines():
-        line = line.strip()
-        if not line:
+        stripped = line.strip()
+        if not stripped:
             continue
         try:
-            statements.append(json.loads(line))
+            parsed = json.loads(stripped)
         except json.JSONDecodeError:
-            # 혹시 JSON 이 아닌 줄이 섞여 있으면 raw 로 보존.
-            statements.append({"raw": line})
+            parsed = None
+
+        # statement 로 인정하는 조건: dict 이고 "type" 키가 있어야 함.
+        # 단독 숫자 (예: COUNT(*) 결과 "2") 도 json.loads 는 int 로 성공하지만
+        # statement 가 아니라 결과 줄이므로 제외한다.
+        is_statement = isinstance(parsed, dict) and "type" in parsed
+
+        if is_statement:
+            # 새 statement 시작 — 직전 결과를 먼저 flush
+            flush_result()
+            pending_result_lines = []
+            statements.append(parsed)
+        else:
+            # 결과 표의 한 줄
+            pending_result_lines.append(line)
+
+    # 마지막 statement 의 결과 flush
+    flush_result()
 
     # 6) 결과 묶어서 반환
     return {
