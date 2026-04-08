@@ -68,7 +68,7 @@
 - [ ] README 초안 작성
 
 ### MP4 (발표 전) — main 머지
-- [ ] develop → main PR
+- [ ] dev → main PR
 - [ ] 최종 데모 확인
 
 ---
