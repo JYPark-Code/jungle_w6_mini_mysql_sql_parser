@@ -10,6 +10,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+int run_executor_tests(void);
+
 static int g_pass = 0;
 static int g_fail = 0;
 
@@ -112,6 +114,43 @@ static void test_free_null(void) {
     SECTION("free_parsed(NULL)");
     free_parsed(NULL);    /* must not crash */
     g_pass++;
+}
+
+static void test_select_count_star(void) {
+    SECTION("SELECT COUNT(*) FROM table");
+    ParsedSQL *s = parse_sql("SELECT COUNT(*) FROM users");
+    CHECK(s->type == QUERY_SELECT, "type SELECT");
+    CHECK(strcmp(s->table, "users") == 0, "table");
+    CHECK(s->col_count == 1, "1 column");
+    CHECK(strcmp(s->columns[0], "COUNT(*)") == 0, "COUNT(*) 한 컬럼으로 묶임");
+    free_parsed(s);
+}
+
+static void test_select_count_star_spaced(void) {
+    SECTION("SELECT COUNT ( * ) FROM table — 공백 변형");
+    ParsedSQL *s = parse_sql("SELECT COUNT ( * ) FROM users");
+    CHECK(s->col_count == 1, "1 column");
+    /* 공백 없이 이어붙어야 storage 의 normalized 비교가 잘 작동 */
+    CHECK(strcmp(s->columns[0], "COUNT(*)") == 0, "공백 제거되어 COUNT(*)");
+    free_parsed(s);
+}
+
+static void test_select_count_with_where(void) {
+    SECTION("SELECT COUNT(*) FROM t WHERE ...");
+    ParsedSQL *s = parse_sql("SELECT COUNT(*) FROM users WHERE age > 20");
+    CHECK(s->col_count == 1, "1 column");
+    CHECK(strcmp(s->columns[0], "COUNT(*)") == 0, "COUNT(*)");
+    CHECK(s->where_count == 1, "WHERE 1개");
+    CHECK(strcmp(s->where[0].column, "age") == 0, "WHERE col");
+    free_parsed(s);
+}
+
+static void test_select_function_with_arg(void) {
+    SECTION("SELECT SUM(price) FROM t — 일반 함수 호출형");
+    ParsedSQL *s = parse_sql("SELECT SUM(price) FROM orders");
+    CHECK(s->col_count == 1, "1 column");
+    CHECK(strcmp(s->columns[0], "SUM(price)") == 0, "SUM(price) 한 컬럼");
+    free_parsed(s);
 }
 
 /* ─── 엣지 케이스 ────────────────────────────────────────── */
@@ -550,6 +589,10 @@ int main(void) {
     test_delete();
     test_update();
     test_free_null();
+    test_select_count_star();
+    test_select_count_star_spaced();
+    test_select_count_with_where();
+    test_select_function_with_arg();
     test_empty_input();
     test_unknown_keyword();
     test_case_insensitive();
@@ -595,5 +638,9 @@ int main(void) {
     test_format_null_safe();
 
     fprintf(stderr, "\n%d passed, %d failed\n", g_pass, g_fail);
+    if (run_executor_tests() != 0) return 1;
     return g_fail == 0 ? 0 : 1;
 }
+
+
+

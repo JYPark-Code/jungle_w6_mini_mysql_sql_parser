@@ -4,11 +4,27 @@
 #include <stdlib.h>
 #include <string.h>
 
+#ifdef _WIN32
+#include <direct.h>
+#define MKDIR(path) _mkdir(path)
+#else
+#include <sys/stat.h>
+#include <sys/types.h>
+#define MKDIR(path) mkdir(path, 0775)
+#endif
+
 #include "types.h"
 
 #define STORAGE_PATH_MAX 512
 #define STORAGE_LINE_MAX 512
 #define COLUMN_NAME_MAX (sizeof(((ColDef *)0)->name))
+
+typedef struct {
+    char ***rows;
+    int count;
+    int capacity;
+    int row_width;
+} StorageRowBuffer;
 
 static int validate_insert_input(const char *table, char **values, int count);
 static int validate_delete_input(const char *table, WhereClause *where, int where_count);
@@ -67,11 +83,38 @@ static int validate_literal_for_type(ColumnType type, const char *op, const char
 static int validate_update_value_for_type(ColumnType type, const char *value);
 static int validate_date_text(const char *text);
 static void free_string_array(char **arr, int count);
+static void free_row_buffer(StorageRowBuffer *buffer, int free_cells);
 
 static char *dup_string(const char *src);
 static char *trim_whitespace(char *text);
 static int equals_ignore_case(const char *left, const char *right);
+static int normalized_equals_ignore_case(const char *left, const char *right);
 static int parse_column_type(const char *text, ColumnType *out_type);
+static void strip_optional_quotes(const char *input, char *output, size_t output_size);
+static int ensure_directory_exists(const char *path);
+static int ensure_storage_directories(void);
+static int path_exists(const char *path);
+static int parse_schema_definition(const char *text, char *name_out, size_t name_size,
+                                   char *type_out, size_t type_size);
+static int load_table_rows(const char *table_path, int schema_count, StorageRowBuffer *rows);
+static int append_row_buffer(StorageRowBuffer *buffer, char **row);
+static int evaluate_select_clause(const ColDef *schema, int schema_count,
+                                  char **row, int row_count,
+                                  const WhereClause *clause, int *matched);
+static int row_matches_select(const ParsedSQL *sql, const ColDef *schema, int schema_count,
+                              char **row, int row_count, int *matched);
+static int collect_matching_rows(const ParsedSQL *sql, const ColDef *schema, int schema_count,
+                                 const StorageRowBuffer *rows, StorageRowBuffer *selection);
+static int compare_cells_by_type(ColumnType type, const char *left, const char *right, int *out_cmp);
+static int compare_rows_for_order(const ColDef *schema, int order_index, char **left, char **right);
+static int sort_selection(const ParsedSQL *sql, const ColDef *schema, int schema_count,
+                          StorageRowBuffer *selection);
+static int is_select_all(const ParsedSQL *sql);
+static int is_count_star(const ParsedSQL *sql);
+static int resolve_selected_columns(const ParsedSQL *sql, const ColDef *schema, int schema_count,
+                                    int **indices_out, int *count_out);
+static int print_selection(const ParsedSQL *sql, const ColDef *schema, int schema_count,
+                           const StorageRowBuffer *selection);
 
 /* 입력: 테이블 이름, optional 컬럼 목록, 값 목록, 값 개수
  * 동작: schema를 읽어 INSERT 값을 schema 순서의 row로 정렬한 뒤 CSV에 append
@@ -163,10 +206,47 @@ cleanup:
  * 반환: 미구현 상태이므로 -1 */
 int storage_select(const char *table, ParsedSQL *sql)
 {
-    (void)table;
-    (void)sql;
-    fprintf(stderr, "[storage] SELECT is not implemented yet\n");
-    return -1;
+    char schema_path[STORAGE_PATH_MAX];
+    char table_path[STORAGE_PATH_MAX];
+    ColDef *schema = NULL;
+    int schema_count = 0;
+    StorageRowBuffer rows = {0};
+    StorageRowBuffer selection = {0};
+    int status = -1;
+
+    if (table == NULL || table[0] == '\0' || sql == NULL) {
+        fprintf(stderr, "storage_select() received invalid arguments.\n");
+        return -1;
+    }
+
+    if (build_schema_path(table, schema_path, sizeof(schema_path)) != 0 ||
+        build_table_path(table, table_path, sizeof(table_path)) != 0) {
+        return -1;
+    }
+
+    if (load_schema(schema_path, &schema, &schema_count) != 0) {
+        return -1;
+    }
+
+    if (load_table_rows(table_path, schema_count, &rows) != 0) {
+        goto cleanup;
+    }
+
+    if (collect_matching_rows(sql, schema, schema_count, &rows, &selection) != 0) {
+        goto cleanup;
+    }
+
+    if (sort_selection(sql, schema, schema_count, &selection) != 0) {
+        goto cleanup;
+    }
+
+    status = print_selection(sql, schema, schema_count, &selection);
+
+cleanup:
+    free_row_buffer(&selection, 0);
+    free_row_buffer(&rows, 1);
+    free(schema);
+    return status;
 }
 
 /* 입력: 테이블 이름, SET 절 배열, SET 개수, WHERE 배열, WHERE 개수
@@ -227,11 +307,76 @@ cleanup:
  * 반환: 미구현 상태이므로 -1 */
 int storage_create(const char *table, char **col_defs, int count)
 {
-    (void)table;
-    (void)col_defs;
-    (void)count;
-    fprintf(stderr, "[storage] CREATE is not implemented yet\n");
-    return -1;
+    char schema_path[STORAGE_PATH_MAX];
+    char table_path[STORAGE_PATH_MAX];
+    FILE *schema_fp = NULL;
+    FILE *table_fp = NULL;
+    int index;
+    int status = -1;
+
+    if (table == NULL || table[0] == '\0' || col_defs == NULL || count <= 0) {
+        fprintf(stderr, "storage_create() received invalid arguments.\n");
+        return -1;
+    }
+
+    if (ensure_storage_directories() != 0) {
+        return -1;
+    }
+
+    if (build_schema_path(table, schema_path, sizeof(schema_path)) != 0 ||
+        build_table_path(table, table_path, sizeof(table_path)) != 0) {
+        return -1;
+    }
+
+    schema_fp = fopen(schema_path, "w");
+    if (schema_fp == NULL) {
+        goto cleanup;
+    }
+
+    for (index = 0; index < count; ++index) {
+        char column_name[COLUMN_NAME_MAX];
+        char type_name[64];
+
+        if (parse_schema_definition(col_defs[index], column_name, sizeof(column_name),
+                                    type_name, sizeof(type_name)) != 0) {
+            goto cleanup;
+        }
+
+        if (fprintf(schema_fp, "%s,%s\n", column_name, type_name) < 0) {
+            goto cleanup;
+        }
+    }
+
+    if (fclose(schema_fp) != 0) {
+        schema_fp = NULL;
+        goto cleanup;
+    }
+    schema_fp = NULL;
+
+    table_fp = fopen(table_path, "a");
+    if (table_fp == NULL) {
+        goto cleanup;
+    }
+
+    if (fclose(table_fp) != 0) {
+        table_fp = NULL;
+        goto cleanup;
+    }
+    table_fp = NULL;
+
+    status = 0;
+
+cleanup:
+    if (schema_fp != NULL) {
+        fclose(schema_fp);
+    }
+    if (table_fp != NULL) {
+        fclose(table_fp);
+    }
+    if (status != 0) {
+        remove(schema_path);
+    }
+    return status;
 }
 
 /* 입력: 테이블 이름, 값 배열, 값 개수
@@ -314,10 +459,27 @@ static int validate_update_input(const char *table, SetClause *set, int set_coun
 static int build_schema_path(const char *table, char *out, size_t size)
 {
     int written;
+    char legacy_path[STORAGE_PATH_MAX];
 
     written = snprintf(out, size, "data/schema/%s.schema", table);
     if (written < 0 || (size_t)written >= size) {
         return -1;
+    }
+
+    written = snprintf(legacy_path, sizeof(legacy_path), "data/%s.schema", table);
+    if (written < 0 || (size_t)written >= sizeof(legacy_path)) {
+        return -1;
+    }
+
+    if (path_exists(out)) {
+        return 0;
+    }
+
+    if (path_exists(legacy_path)) {
+        written = snprintf(out, size, "%s", legacy_path);
+        if (written < 0 || (size_t)written >= size) {
+            return -1;
+        }
     }
 
     return 0;
@@ -329,10 +491,27 @@ static int build_schema_path(const char *table, char *out, size_t size)
 static int build_table_path(const char *table, char *out, size_t size)
 {
     int written;
+    char legacy_path[STORAGE_PATH_MAX];
 
     written = snprintf(out, size, "data/tables/%s.csv", table);
     if (written < 0 || (size_t)written >= size) {
         return -1;
+    }
+
+    written = snprintf(legacy_path, sizeof(legacy_path), "data/%s.csv", table);
+    if (written < 0 || (size_t)written >= sizeof(legacy_path)) {
+        return -1;
+    }
+
+    if (path_exists(out)) {
+        return 0;
+    }
+
+    if (path_exists(legacy_path)) {
+        written = snprintf(out, size, "%s", legacy_path);
+        if (written < 0 || (size_t)written >= size) {
+            return -1;
+        }
     }
 
     return 0;
@@ -344,10 +523,23 @@ static int build_table_path(const char *table, char *out, size_t size)
 static int build_temp_path(const char *table, char *out, size_t size)
 {
     int written;
+    char legacy_table_path[STORAGE_PATH_MAX];
 
     written = snprintf(out, size, "data/tables/%s.csv.tmp", table);
     if (written < 0 || (size_t)written >= size) {
         return -1;
+    }
+
+    written = snprintf(legacy_table_path, sizeof(legacy_table_path), "data/%s.csv", table);
+    if (written < 0 || (size_t)written >= sizeof(legacy_table_path)) {
+        return -1;
+    }
+
+    if (!path_exists(out) && path_exists(legacy_table_path)) {
+        written = snprintf(out, size, "data/%s.csv.tmp", table);
+        if (written < 0 || (size_t)written >= size) {
+            return -1;
+        }
     }
 
     return 0;
@@ -369,38 +561,20 @@ static int load_schema(const char *schema_path, ColDef **out_schema, int *out_co
     }
 
     while (fgets(line, sizeof(line), fp) != NULL) {
-        char *comma;
-        char *name;
-        char *type_text;
+        char column_name[COLUMN_NAME_MAX];
+        char type_text[64];
         ColumnType type;
         ColDef *grown_schema;
 
-        name = trim_whitespace(line);
-        if (name[0] == '\0') {
+        if (parse_schema_definition(line, column_name, sizeof(column_name),
+                                    type_text, sizeof(type_text)) != 0) {
+            free(schema);
+            fclose(fp);
+            return -1;
+        }
+
+        if (column_name[0] == '\0') {
             continue;
-        }
-
-        comma = strchr(name, ',');
-        if (comma == NULL) {
-            free(schema);
-            fclose(fp);
-            return -1;
-        }
-
-        *comma = '\0';
-        type_text = trim_whitespace(comma + 1);
-        name = trim_whitespace(name);
-
-        if (name[0] == '\0' || type_text[0] == '\0') {
-            free(schema);
-            fclose(fp);
-            return -1;
-        }
-
-        if (strlen(name) >= COLUMN_NAME_MAX) {
-            free(schema);
-            fclose(fp);
-            return -1;
         }
 
         if (parse_column_type(type_text, &type) != 0) {
@@ -418,7 +592,7 @@ static int load_schema(const char *schema_path, ColDef **out_schema, int *out_co
 
         schema = grown_schema;
         memset(&schema[schema_count], 0, sizeof(schema[schema_count]));
-        memcpy(schema[schema_count].name, name, strlen(name) + 1U);
+        memcpy(schema[schema_count].name, column_name, strlen(column_name) + 1U);
         schema[schema_count].type = type;
         schema_count++;
     }
@@ -1687,4 +1861,599 @@ static int parse_column_type(const char *text, ColumnType *out_type)
     }
 
     return 0;
+}
+
+static int normalized_equals_ignore_case(const char *left, const char *right)
+{
+    char left_buffer[256];
+    char right_buffer[256];
+    size_t left_index = 0U;
+    size_t right_index = 0U;
+
+    while (left != NULL && *left != '\0' && left_index + 1U < sizeof(left_buffer)) {
+        if (!isspace((unsigned char)*left)) {
+            left_buffer[left_index++] = (char)tolower((unsigned char)*left);
+        }
+        ++left;
+    }
+    left_buffer[left_index] = '\0';
+
+    while (right != NULL && *right != '\0' && right_index + 1U < sizeof(right_buffer)) {
+        if (!isspace((unsigned char)*right)) {
+            right_buffer[right_index++] = (char)tolower((unsigned char)*right);
+        }
+        ++right;
+    }
+    right_buffer[right_index] = '\0';
+
+    return strcmp(left_buffer, right_buffer) == 0;
+}
+
+static void strip_optional_quotes(const char *input, char *output, size_t output_size)
+{
+    size_t length;
+    size_t copy_length;
+
+    if (output == NULL || output_size == 0U) {
+        return;
+    }
+
+    if (input == NULL) {
+        output[0] = '\0';
+        return;
+    }
+
+    length = strlen(input);
+    if (length >= 2U &&
+        ((input[0] == '\'' && input[length - 1U] == '\'') ||
+         (input[0] == '"' && input[length - 1U] == '"'))) {
+        input += 1;
+        length -= 2U;
+    }
+
+    copy_length = (length < output_size - 1U) ? length : (output_size - 1U);
+    memcpy(output, input, copy_length);
+    output[copy_length] = '\0';
+}
+
+static int ensure_directory_exists(const char *path)
+{
+    if (path == NULL || path[0] == '\0') {
+        return -1;
+    }
+
+    if (MKDIR(path) == 0 || errno == EEXIST) {
+        return 0;
+    }
+
+    return -1;
+}
+
+static int ensure_storage_directories(void)
+{
+    if (ensure_directory_exists("data") != 0) {
+        return -1;
+    }
+
+    if (ensure_directory_exists("data/schema") != 0) {
+        return -1;
+    }
+
+    if (ensure_directory_exists("data/tables") != 0) {
+        return -1;
+    }
+
+    return 0;
+}
+
+static int path_exists(const char *path)
+{
+    FILE *fp;
+
+    if (path == NULL || path[0] == '\0') {
+        return 0;
+    }
+
+    fp = fopen(path, "r");
+    if (fp == NULL) {
+        return 0;
+    }
+
+    fclose(fp);
+    return 1;
+}
+
+static int parse_schema_definition(const char *text, char *name_out, size_t name_size,
+                                   char *type_out, size_t type_size)
+{
+    char buffer[STORAGE_LINE_MAX];
+    char *trimmed;
+    char *separator;
+    char *type_text;
+    size_t name_length;
+    size_t type_length;
+
+    if (text == NULL || name_out == NULL || type_out == NULL ||
+        name_size == 0U || type_size == 0U) {
+        return -1;
+    }
+
+    strncpy(buffer, text, sizeof(buffer) - 1U);
+    buffer[sizeof(buffer) - 1U] = '\0';
+
+    trimmed = trim_whitespace(buffer);
+    if (trimmed[0] == '\0' || trimmed[0] == '#') {
+        name_out[0] = '\0';
+        type_out[0] = '\0';
+        return 0;
+    }
+
+    separator = strchr(trimmed, ',');
+    if (separator != NULL) {
+        *separator = '\0';
+        type_text = trim_whitespace(separator + 1);
+    } else {
+        size_t offset = strcspn(trimmed, " \t");
+        if (trimmed[offset] == '\0') {
+            return -1;
+        }
+        separator = trimmed + offset;
+        *separator = '\0';
+        type_text = trim_whitespace(separator + 1);
+    }
+
+    trimmed = trim_whitespace(trimmed);
+    if (trimmed[0] == '\0' || type_text[0] == '\0') {
+        return -1;
+    }
+
+    name_length = strlen(trimmed);
+    type_length = strlen(type_text);
+    if (name_length + 1U > name_size || type_length + 1U > type_size) {
+        return -1;
+    }
+
+    memcpy(name_out, trimmed, name_length + 1U);
+    memcpy(type_out, type_text, type_length + 1U);
+    return 0;
+}
+
+static int append_row_buffer(StorageRowBuffer *buffer, char **row)
+{
+    char ***grown_rows;
+
+    if (buffer == NULL || row == NULL) {
+        return -1;
+    }
+
+    if (buffer->count == buffer->capacity) {
+        int new_capacity = (buffer->capacity == 0) ? 4 : buffer->capacity * 2;
+        grown_rows = realloc(buffer->rows, (size_t)new_capacity * sizeof(*grown_rows));
+        if (grown_rows == NULL) {
+            return -1;
+        }
+        buffer->rows = grown_rows;
+        buffer->capacity = new_capacity;
+    }
+
+    buffer->rows[buffer->count++] = row;
+    return 0;
+}
+
+static int load_table_rows(const char *table_path, int schema_count, StorageRowBuffer *rows)
+{
+    FILE *fp;
+
+    if (table_path == NULL || rows == NULL || schema_count <= 0) {
+        return -1;
+    }
+
+    rows->rows = NULL;
+    rows->count = 0;
+    rows->capacity = 0;
+    rows->row_width = schema_count;
+
+    fp = fopen(table_path, "r");
+    if (fp == NULL) {
+        return -1;
+    }
+
+    for (;;) {
+        char *record = NULL;
+        char **row = NULL;
+        int row_count = 0;
+        int read_status;
+
+        read_status = read_csv_record(fp, &record);
+        if (read_status == 0) {
+            break;
+        }
+        if (read_status < 0) {
+            fclose(fp);
+            free_row_buffer(rows, 1);
+            return -1;
+        }
+
+        if (parse_csv_record(record, &row, &row_count) != 0) {
+            free(record);
+            fclose(fp);
+            free_row_buffer(rows, 1);
+            return -1;
+        }
+        free(record);
+
+        if (row_count != schema_count) {
+            free_string_array(row, row_count);
+            fclose(fp);
+            free_row_buffer(rows, 1);
+            return -1;
+        }
+
+        if (append_row_buffer(rows, row) != 0) {
+            free_string_array(row, row_count);
+            fclose(fp);
+            free_row_buffer(rows, 1);
+            return -1;
+        }
+    }
+
+    fclose(fp);
+    return 0;
+}
+
+static int evaluate_select_clause(const ColDef *schema, int schema_count,
+                                  char **row, int row_count,
+                                  const WhereClause *clause, int *matched)
+{
+    int column_index;
+    char literal[256];
+    int compare_status;
+
+    if (schema == NULL || row == NULL || clause == NULL || matched == NULL) {
+        return -1;
+    }
+
+    column_index = find_schema_index(schema, schema_count, clause->column);
+    if (column_index < 0 || column_index >= row_count) {
+        return -1;
+    }
+
+    strip_optional_quotes(clause->value, literal, sizeof(literal));
+
+    if (!is_supported_operator(clause->op) ||
+        !is_supported_operator_for_type(schema[column_index].type, clause->op) ||
+        validate_literal_for_type(schema[column_index].type, clause->op, literal) != 0) {
+        return -1;
+    }
+
+    compare_status = compare_value_by_type(schema[column_index].type,
+                                           row[column_index],
+                                           clause->op,
+                                           literal,
+                                           matched);
+    return compare_status;
+}
+
+static int row_matches_select(const ParsedSQL *sql, const ColDef *schema, int schema_count,
+                              char **row, int row_count, int *matched)
+{
+    int index;
+    int clause_match;
+    int use_or_logic;
+
+    if (sql == NULL || schema == NULL || row == NULL || matched == NULL) {
+        return -1;
+    }
+
+    if (sql->where_count <= 0 || sql->where == NULL) {
+        *matched = 1;
+        return 0;
+    }
+
+    use_or_logic = equals_ignore_case(sql->where_logic, "OR");
+    *matched = use_or_logic ? 0 : 1;
+
+    for (index = 0; index < sql->where_count; ++index) {
+        if (evaluate_select_clause(schema, schema_count, row, row_count,
+                                   &sql->where[index], &clause_match) != 0) {
+            return -1;
+        }
+
+        if (use_or_logic) {
+            *matched = *matched || clause_match;
+            if (*matched) {
+                return 0;
+            }
+        } else {
+            *matched = *matched && clause_match;
+            if (!*matched) {
+                return 0;
+            }
+        }
+    }
+
+    return 0;
+}
+
+static int collect_matching_rows(const ParsedSQL *sql, const ColDef *schema, int schema_count,
+                                 const StorageRowBuffer *rows, StorageRowBuffer *selection)
+{
+    int row_index;
+
+    if (sql == NULL || schema == NULL || rows == NULL || selection == NULL) {
+        return -1;
+    }
+
+    selection->rows = NULL;
+    selection->count = 0;
+    selection->capacity = 0;
+    selection->row_width = rows->row_width;
+
+    for (row_index = 0; row_index < rows->count; ++row_index) {
+        int matched;
+
+        if (row_matches_select(sql, schema, schema_count,
+                               rows->rows[row_index], rows->row_width, &matched) != 0) {
+            free_row_buffer(selection, 0);
+            return -1;
+        }
+
+        if (matched && append_row_buffer(selection, rows->rows[row_index]) != 0) {
+            free_row_buffer(selection, 0);
+            return -1;
+        }
+    }
+
+    return 0;
+}
+
+static int compare_cells_by_type(ColumnType type, const char *left, const char *right, int *out_cmp)
+{
+    char lhs[256];
+    char rhs[256];
+
+    if (out_cmp == NULL) {
+        return -1;
+    }
+
+    strip_optional_quotes(left, lhs, sizeof(lhs));
+    strip_optional_quotes(right, rhs, sizeof(rhs));
+
+    switch (type) {
+        case TYPE_INT: {
+            long lhs_value;
+            long rhs_value;
+
+            if (parse_long_value(lhs, &lhs_value) != 0 || parse_long_value(rhs, &rhs_value) != 0) {
+                return -1;
+            }
+
+            *out_cmp = (lhs_value > rhs_value) - (lhs_value < rhs_value);
+            return 0;
+        }
+
+        case TYPE_FLOAT: {
+            double lhs_value;
+            double rhs_value;
+
+            if (parse_double_value(lhs, &lhs_value) != 0 ||
+                parse_double_value(rhs, &rhs_value) != 0) {
+                return -1;
+            }
+
+            *out_cmp = (lhs_value > rhs_value) - (lhs_value < rhs_value);
+            return 0;
+        }
+
+        case TYPE_BOOLEAN: {
+            int lhs_value;
+            int rhs_value;
+
+            if (parse_boolean_value(lhs, &lhs_value) != 0 ||
+                parse_boolean_value(rhs, &rhs_value) != 0) {
+                return -1;
+            }
+
+            *out_cmp = (lhs_value > rhs_value) - (lhs_value < rhs_value);
+            return 0;
+        }
+
+        case TYPE_DATE:
+        case TYPE_VARCHAR:
+        case TYPE_DATETIME:
+            *out_cmp = strcmp(lhs, rhs);
+            if (*out_cmp < 0) {
+                *out_cmp = -1;
+            } else if (*out_cmp > 0) {
+                *out_cmp = 1;
+            }
+            return 0;
+    }
+
+    return -1;
+}
+
+static int compare_rows_for_order(const ColDef *schema, int order_index, char **left, char **right)
+{
+    int cmp;
+
+    if (schema == NULL || left == NULL || right == NULL) {
+        return 0;
+    }
+
+    if (compare_cells_by_type(schema[order_index].type,
+                              left[order_index],
+                              right[order_index],
+                              &cmp) != 0) {
+        return strcmp(left[order_index], right[order_index]);
+    }
+
+    return cmp;
+}
+
+static int sort_selection(const ParsedSQL *sql, const ColDef *schema, int schema_count,
+                          StorageRowBuffer *selection)
+{
+    int order_index;
+    int row_index;
+    int next_index;
+    int multiplier;
+
+    if (sql == NULL || schema == NULL || selection == NULL ||
+        sql->order_by == NULL || sql->order_by->column[0] == '\0') {
+        return 0;
+    }
+
+    order_index = find_schema_index(schema, schema_count, sql->order_by->column);
+    if (order_index < 0) {
+        return -1;
+    }
+
+    multiplier = (sql->order_by->asc == 0) ? -1 : 1;
+
+    for (row_index = 0; row_index < selection->count; ++row_index) {
+        for (next_index = row_index + 1; next_index < selection->count; ++next_index) {
+            int comparison = compare_rows_for_order(schema, order_index,
+                                                    selection->rows[row_index],
+                                                    selection->rows[next_index]);
+            if (comparison * multiplier > 0) {
+                char **tmp = selection->rows[row_index];
+                selection->rows[row_index] = selection->rows[next_index];
+                selection->rows[next_index] = tmp;
+            }
+        }
+    }
+
+    return 0;
+}
+
+static int is_select_all(const ParsedSQL *sql)
+{
+    return sql != NULL &&
+           (sql->col_count <= 0 ||
+            (sql->col_count == 1 && sql->columns != NULL &&
+             strcmp(sql->columns[0], "*") == 0));
+}
+
+static int is_count_star(const ParsedSQL *sql)
+{
+    return sql != NULL &&
+           sql->col_count == 1 &&
+           sql->columns != NULL &&
+           normalized_equals_ignore_case(sql->columns[0], "COUNT(*)");
+}
+
+static int resolve_selected_columns(const ParsedSQL *sql, const ColDef *schema, int schema_count,
+                                    int **indices_out, int *count_out)
+{
+    int *indices;
+    int index;
+
+    if (sql == NULL || schema == NULL || indices_out == NULL || count_out == NULL) {
+        return -1;
+    }
+
+    if (is_select_all(sql)) {
+        indices = malloc((size_t)schema_count * sizeof(*indices));
+        if (indices == NULL) {
+            return -1;
+        }
+
+        for (index = 0; index < schema_count; ++index) {
+            indices[index] = index;
+        }
+
+        *indices_out = indices;
+        *count_out = schema_count;
+        return 0;
+    }
+
+    indices = malloc((size_t)sql->col_count * sizeof(*indices));
+    if (indices == NULL) {
+        return -1;
+    }
+
+    for (index = 0; index < sql->col_count; ++index) {
+        indices[index] = find_schema_index(schema, schema_count, sql->columns[index]);
+        if (indices[index] < 0) {
+            free(indices);
+            return -1;
+        }
+    }
+
+    *indices_out = indices;
+    *count_out = sql->col_count;
+    return 0;
+}
+
+static int print_selection(const ParsedSQL *sql, const ColDef *schema, int schema_count,
+                           const StorageRowBuffer *selection)
+{
+    int *selected_indices = NULL;
+    int selected_count = 0;
+    int limit;
+    int row_index;
+    int index;
+
+    if (sql == NULL || schema == NULL || selection == NULL) {
+        return -1;
+    }
+
+    if (is_count_star(sql)) {
+        printf("COUNT(*)\n%d\n", selection->count);
+        return 0;
+    }
+
+    if (resolve_selected_columns(sql, schema, schema_count,
+                                 &selected_indices, &selected_count) != 0) {
+        return -1;
+    }
+
+    for (index = 0; index < selected_count; ++index) {
+        if (index > 0) {
+            printf(" | ");
+        }
+        printf("%s", schema[selected_indices[index]].name);
+    }
+    printf("\n");
+
+    limit = sql->limit;
+    if (limit < 0 || limit > selection->count) {
+        limit = selection->count;
+    }
+
+    for (row_index = 0; row_index < limit; ++row_index) {
+        for (index = 0; index < selected_count; ++index) {
+            if (index > 0) {
+                printf(" | ");
+            }
+            printf("%s", selection->rows[row_index][selected_indices[index]]);
+        }
+        printf("\n");
+    }
+
+    printf("(%d rows)\n", limit);
+    free(selected_indices);
+    return 0;
+}
+
+static void free_row_buffer(StorageRowBuffer *buffer, int free_cells)
+{
+    int row_index;
+
+    if (buffer == NULL) {
+        return;
+    }
+
+    if (free_cells) {
+        for (row_index = 0; row_index < buffer->count; ++row_index) {
+            free_string_array(buffer->rows[row_index], buffer->row_width);
+        }
+    }
+
+    free(buffer->rows);
+    buffer->rows = NULL;
+    buffer->count = 0;
+    buffer->capacity = 0;
+    buffer->row_width = 0;
 }
