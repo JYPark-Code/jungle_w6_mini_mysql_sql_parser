@@ -1,29 +1,54 @@
-/* sql_format.c — --format 플래그용 ParsedSQL → 정규화 SQL 직렬화 (지용)
+/* sql_format.c — 파싱 결과를 다시 SQL 문자열로 되돌리는 부품 (지용)
+ * ============================================================================
  *
- * 파싱 결과를 다시 SQL 문자열로 출력. 발표 시 "이렇게 파싱했고
- * 이렇게 다시 직렬화 가능" 임팩트 + 파서 round-trip 검증 용도.
+ * ▣ 이 파일이 하는 일
+ *   ParsedSQL 구조체를 보고 "원래 SQL 문장이라면 어떻게 생겼을까?" 를
+ *   다시 글자로 만들어낸다. --format 옵션이 켜지면 호출된다.
+ *
+ * ▣ 왜 필요하지?
+ *   1) 입력 SQL 정규화: "create  table  USERS ( id int )" 같이 지저분한
+ *      입력도 "CREATE TABLE USERS (id INT);" 처럼 깔끔하게 다시 출력.
+ *   2) round-trip 검증: parse → format → parse 결과가 같으면 파서가
+ *      정보를 잃지 않고 잘 보존한다는 증명.
+ *   3) 발표 임팩트: "이렇게 잘랐고, 다시 합치면 이게 됩니다" 시연.
+ *
+ * ▣ "정규화" 가 뭐지?
+ *   같은 의미의 SQL 을 항상 같은 모양으로 통일하는 것.
+ *   - 키워드는 모두 대문자
+ *   - 컬럼 사이는 콤마+공백 1칸
+ *   - 문자열 값은 작은따옴표
+ *   - 끝에 세미콜론
+ * ============================================================================
  */
 
 #include "types.h"
 #include <stdio.h>
 #include <string.h>
 
-/* 값에 공백/특수문자 있으면 따옴표로 감싸기. 숫자는 그대로. */
+/* needs_quote: 이 값이 따옴표로 감싸야 하는 문자열인지 판단.
+ *
+ *   - 빈 값                          → 따옴표 필요
+ *   - 공백/하이픈/콜론 포함         → 따옴표 필요 (예: "hello world", "2024-01-15")
+ *   - 첫 글자가 0~9 또는 +/-        → 숫자로 보고 따옴표 안 씀
+ *   - 그 외                          → 따옴표 사용 (안전한 기본값)
+ */
 static int needs_quote(const char *s) {
     if (!s || !*s) return 1;
     for (const char *p = s; *p; p++) {
         if (*p == ' ' || *p == '-' || *p == ':') return 1;
     }
-    /* 첫 글자가 숫자나 +/- 이면 숫자로 간주 */
     if ((s[0] >= '0' && s[0] <= '9') || s[0] == '-' || s[0] == '+') return 0;
     return 1;
 }
 
+/* emit_value: 값을 적절히 따옴표로 감싸 출력. */
 static void emit_value(FILE *out, const char *v) {
     if (needs_quote(v)) fprintf(out, "'%s'", v);
     else                fprintf(out, "%s",   v);
 }
 
+/* emit_where: WHERE 절을 출력. WHERE 가 없으면 아무것도 안 함.
+ * 두 번째 조건 앞에는 AND/OR 같은 결합 키워드가 들어간다. */
 static void emit_where(FILE *out, const ParsedSQL *sql) {
     if (sql->where_count == 0) return;
     fprintf(out, " WHERE ");
@@ -34,10 +59,15 @@ static void emit_where(FILE *out, const ParsedSQL *sql) {
     }
 }
 
+/* print_format: ParsedSQL → 정규화된 SQL 문자열 출력.
+ *
+ * 쿼리 종류별로 분기해서 각각 다른 모양으로 출력한다. */
 void print_format(FILE *out, const ParsedSQL *sql) {
     if (!out || !sql) return;
 
     switch (sql->type) {
+
+        /* CREATE TABLE name (col1 TYPE1, col2 TYPE2, ...); */
         case QUERY_CREATE: {
             fprintf(out, "CREATE TABLE %s (", sql->table);
             for (int i = 0; i < sql->col_def_count; i++) {
@@ -48,6 +78,7 @@ void print_format(FILE *out, const ParsedSQL *sql) {
             break;
         }
 
+        /* INSERT INTO name (col, ...) VALUES (val, ...); */
         case QUERY_INSERT: {
             fprintf(out, "INSERT INTO %s (", sql->table);
             for (int i = 0; i < sql->col_count; i++) {
@@ -63,6 +94,7 @@ void print_format(FILE *out, const ParsedSQL *sql) {
             break;
         }
 
+        /* SELECT col, ... FROM name [WHERE ...] [ORDER BY ...] [LIMIT N]; */
         case QUERY_SELECT: {
             fprintf(out, "SELECT ");
             for (int i = 0; i < sql->col_count; i++) {
@@ -83,6 +115,7 @@ void print_format(FILE *out, const ParsedSQL *sql) {
             break;
         }
 
+        /* DELETE FROM name [WHERE ...]; */
         case QUERY_DELETE: {
             fprintf(out, "DELETE FROM %s", sql->table);
             emit_where(out, sql);
@@ -90,6 +123,7 @@ void print_format(FILE *out, const ParsedSQL *sql) {
             break;
         }
 
+        /* UPDATE name SET col = val, ... [WHERE ...]; */
         case QUERY_UPDATE: {
             fprintf(out, "UPDATE %s SET ", sql->table);
             for (int i = 0; i < sql->set_count; i++) {
@@ -102,6 +136,7 @@ void print_format(FILE *out, const ParsedSQL *sql) {
             break;
         }
 
+        /* 알 수 없는 쿼리 종류는 SQL 주석으로 표시. */
         default:
             fprintf(out, "-- (UNKNOWN query type)\n");
             break;
