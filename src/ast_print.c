@@ -31,6 +31,26 @@
 
 #include "types.h"
 #include <stdio.h>
+#include <unistd.h>
+
+/* ANSI 컬러 매크로 (세인 PR #31 일부 채택).
+ * file_is_tty() 가 0 이면 빈 문자열로 fallback → 단위 테스트의 메모리 스트림에는
+ * 색이 들어가지 않아 fixture 검증 깨지지 않음. */
+#define AST_RESET "\x1b[0m"
+#define AST_TITLE "\x1b[1;95m"   /* 밝은 자홍 — ParsedSQL 헤더 */
+#define AST_LABEL "\x1b[1;96m"   /* 밝은 청록 — 라벨 (type, table) */
+#define AST_COUNT "\x1b[1;93m"   /* 밝은 노랑 — count 숫자 */
+
+/* file_is_tty: out 이 실제 터미널에 연결되어 있나? 메모리 스트림이면 0. */
+static int file_is_tty(FILE *fp) {
+    if (fp == NULL) return 0;
+    int fd = fileno(fp);
+    if (fd < 0) return 0;
+    return isatty(fd);
+}
+
+/* COLOR(c) — TTY 면 c, 아니면 빈 문자열. printf("%s%s%s", COLOR(AST_TITLE), text, COLOR(AST_RESET)). */
+#define COLOR(c) (use_color ? (c) : "")
 
 /* QueryType enum (숫자) → 사람이 읽을 수 있는 문자열 변환. */
 static const char *qtype_name(QueryType t) {
@@ -64,29 +84,39 @@ void print_ast(FILE *out, const ParsedSQL *sql) {
     /* NULL safe: 둘 중 하나라도 NULL 이면 그냥 종료. 크래시 방지. */
     if (!out || !sql) return;
 
-    fprintf(out, "ParsedSQL\n");
-    fprintf(out, "├─ type:  %s\n", qtype_name(sql->type));
+    /* TTY 일 때만 색을 사용. 메모리 스트림 (단위 테스트) 에서는 빈 문자열. */
+    int use_color = file_is_tty(out);
+
+    fprintf(out, "%sParsedSQL%s\n", COLOR(AST_TITLE), COLOR(AST_RESET));
+    fprintf(out, "├─ %stype:%s  %s\n", COLOR(AST_LABEL), COLOR(AST_RESET), qtype_name(sql->type));
 
     /* table 이름은 항상 출력. 비어있으면 "(none)" 으로. */
-    fprintf(out, "├─ table: %s\n", sql->table[0] ? sql->table : "(none)");
+    fprintf(out, "├─ %stable:%s %s\n", COLOR(AST_LABEL), COLOR(AST_RESET),
+            sql->table[0] ? sql->table : "(none)");
 
     /* SELECT 컬럼 목록 또는 INSERT 컬럼 목록. */
     if (sql->col_count > 0) {
-        fprintf(out, "├─ columns (%d):\n", sql->col_count);
+        fprintf(out, "├─ %scolumns%s (%s%d%s):\n",
+                COLOR(AST_LABEL), COLOR(AST_RESET),
+                COLOR(AST_COUNT), sql->col_count, COLOR(AST_RESET));
         for (int i = 0; i < sql->col_count; i++)
             fprintf(out, "│   • %s\n", sql->columns[i]);
     }
 
     /* INSERT VALUES (...) 목록. */
     if (sql->val_count > 0) {
-        fprintf(out, "├─ values (%d):\n", sql->val_count);
+        fprintf(out, "├─ %svalues%s (%s%d%s):\n",
+                COLOR(AST_LABEL), COLOR(AST_RESET),
+                COLOR(AST_COUNT), sql->val_count, COLOR(AST_RESET));
         for (int i = 0; i < sql->val_count; i++)
             fprintf(out, "│   • %s\n", sql->values[i]);
     }
 
     /* CREATE TABLE 컬럼 정의 ("id INT", "name VARCHAR" 같은 형태). */
     if (sql->col_def_count > 0) {
-        fprintf(out, "├─ col_defs (%d):\n", sql->col_def_count);
+        fprintf(out, "├─ %scol_defs%s (%s%d%s):\n",
+                COLOR(AST_LABEL), COLOR(AST_RESET),
+                COLOR(AST_COUNT), sql->col_def_count, COLOR(AST_RESET));
         for (int i = 0; i < sql->col_def_count; i++)
             fprintf(out, "│   • %s\n", sql->col_defs[i]);
     }
