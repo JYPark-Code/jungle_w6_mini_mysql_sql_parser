@@ -6,12 +6,14 @@ BUILD_DIR = build
 
 SRCS    = $(SRC_DIR)/main.c \
           $(SRC_DIR)/parser.c \
+          $(SRC_DIR)/ast_print.c \
           $(SRC_DIR)/executor.c \
           $(SRC_DIR)/storage.c
 
 TEST_SRCS = $(TEST_DIR)/test_parser.c \
             $(TEST_DIR)/test_executor.c \
             $(SRC_DIR)/parser.c \
+            $(SRC_DIR)/ast_print.c \
             $(SRC_DIR)/executor.c \
             $(SRC_DIR)/storage.c
 

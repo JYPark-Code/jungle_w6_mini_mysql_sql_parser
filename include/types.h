@@ -1,6 +1,8 @@
 #ifndef TYPES_H
 #define TYPES_H
 
+#include <stdio.h>
+
 /* ─── 쿼리 타입 ─────────────────────────────── */
 typedef enum {
     QUERY_SELECT,
@@ -88,6 +90,9 @@ typedef struct {
 /* parser.c */
 ParsedSQL *parse_sql(const char *input);
 void       free_parsed(ParsedSQL *sql);
+
+/* ast_print.c — --debug 플래그용 AST 트리 시각화 */
+void       print_ast(FILE *out, const ParsedSQL *sql);
 
 /* executor.c */
 void       execute(ParsedSQL *sql);
