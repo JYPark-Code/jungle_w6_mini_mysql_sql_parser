@@ -258,6 +258,13 @@ void free_parsed(ParsedSQL *sql) {
         free(sql->col_defs);
     }
     free(sql->where);     /* WhereClause 배열 (안에 동적 메모리 없음) */
+    /* Phase 1: where_links — N-1 개의 결합자 문자열 배열.
+     * 1주차 parser 는 이 필드를 안 쓰므로 NULL. 향후 N-ary 파서가 strdup 으로
+     * 채울 때 free 가 동작해야 한다. */
+    if (sql->where_links) {
+        for (int i = 0; i + 1 < sql->where_count; i++) free(sql->where_links[i]);
+        free(sql->where_links);
+    }
     free(sql->set);       /* SetClause 배열   (안에 동적 메모리 없음) */
     free(sql->order_by);  /* OrderBy 1개      */
     free(sql);
