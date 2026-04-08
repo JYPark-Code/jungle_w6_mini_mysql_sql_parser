@@ -57,6 +57,9 @@ static char *trim_whitespace(char *text);
 static int equals_ignore_case(const char *left, const char *right);
 static int parse_column_type(const char *text, ColumnType *out_type);
 
+/* 입력: 테이블 이름, optional 컬럼 목록, 값 목록, 값 개수
+ * 동작: schema를 읽어 INSERT 값을 schema 순서의 row로 정렬한 뒤 CSV에 append
+ * 반환: 성공 0, 실패 -1 */
 int storage_insert(const char *table, char **columns, char **values, int count)
 {
     char schema_path[STORAGE_PATH_MAX];
@@ -94,6 +97,9 @@ cleanup:
     return status;
 }
 
+/* 입력: 테이블 이름, optional WHERE 배열, WHERE 개수
+ * 동작: schema와 WHERE를 검증한 뒤 조건에 맞는 row를 제외하고 테이블 파일 전체를 재작성
+ * 반환: 성공 0, 실패 -1 */
 int storage_delete(const char *table, WhereClause *where, int where_count)
 {
     char schema_path[STORAGE_PATH_MAX];
@@ -136,6 +142,9 @@ cleanup:
     return status;
 }
 
+/* 입력: 테이블 이름, 값 배열, 값 개수
+ * 동작: INSERT 실행 전에 NULL/빈 문자열/개수 오류 같은 기본 입력 오류를 걸러냄
+ * 반환: 유효하면 0, 잘못된 입력이면 -1 */
 static int validate_insert_input(const char *table, char **values, int count)
 {
     if (table == NULL || table[0] == '\0') {
@@ -149,6 +158,9 @@ static int validate_insert_input(const char *table, char **values, int count)
     return 0;
 }
 
+/* 입력: 테이블 이름, WHERE 배열, WHERE 개수
+ * 동작: DELETE v1 범위인 전체 삭제 또는 단일 WHERE 삭제만 허용하는지 확인
+ * 반환: 유효하면 0, 현재 범위를 벗어나면 -1 */
 static int validate_delete_input(const char *table, WhereClause *where, int where_count)
 {
     if (table == NULL || table[0] == '\0') {
@@ -174,6 +186,9 @@ static int validate_delete_input(const char *table, WhereClause *where, int wher
     return 0;
 }
 
+/* 입력: 테이블 이름, 결과를 쓸 버퍼
+ * 동작: data/schema/<table>.schema 경로 문자열 생성
+ * 반환: 경로 생성 성공 0, 버퍼 초과/실패 -1 */
 static int build_schema_path(const char *table, char *out, size_t size)
 {
     int written;
@@ -186,6 +201,9 @@ static int build_schema_path(const char *table, char *out, size_t size)
     return 0;
 }
 
+/* 입력: 테이블 이름, 결과를 쓸 버퍼
+ * 동작: data/tables/<table>.csv 경로 문자열 생성
+ * 반환: 경로 생성 성공 0, 버퍼 초과/실패 -1 */
 static int build_table_path(const char *table, char *out, size_t size)
 {
     int written;
@@ -198,6 +216,9 @@ static int build_table_path(const char *table, char *out, size_t size)
     return 0;
 }
 
+/* 입력: 테이블 이름, 결과를 쓸 버퍼
+ * 동작: DELETE/UPDATE 재작성에 쓰는 임시 CSV 경로 생성
+ * 반환: 경로 생성 성공 0, 버퍼 초과/실패 -1 */
 static int build_temp_path(const char *table, char *out, size_t size)
 {
     int written;
@@ -210,6 +231,9 @@ static int build_temp_path(const char *table, char *out, size_t size)
     return 0;
 }
 
+/* 입력: schema 파일 경로, 결과 schema 배열 포인터, 결과 개수 포인터
+ * 동작: <column_name>,<type> 형식의 schema 파일을 읽어 ColDef 배열로 적재
+ * 반환: 성공 0, 파일 형식 오류/메모리 오류/빈 schema면 -1 */
 static int load_schema(const char *schema_path, ColDef **out_schema, int *out_count)
 {
     FILE *fp;
@@ -289,6 +313,9 @@ static int load_schema(const char *schema_path, ColDef **out_schema, int *out_co
     return 0;
 }
 
+/* 입력: schema 배열, schema 개수, 찾을 컬럼명
+ * 동작: 컬럼명을 대소문자 무시로 비교해 schema index 탐색
+ * 반환: 찾으면 0 이상 index, 없으면 -1 */
 static int find_schema_index(const ColDef *schema, int schema_count, const char *column)
 {
     int i;
@@ -306,6 +333,9 @@ static int find_schema_index(const ColDef *schema, int schema_count, const char 
     return -1;
 }
 
+/* 입력: schema 배열, schema 개수, optional 컬럼 목록, 값 목록, 값 개수
+ * 동작: INSERT 입력을 schema 순서와 1:1로 맞는 row 문자열 배열로 재구성
+ * 반환: 성공 시 out_row에 새 배열을 넘기고 0, 불일치/중복/누락이면 -1 */
 static int build_row_in_schema_order(const ColDef *schema, int schema_count,
                                      char **columns, char **values, int count,
                                      char ***out_row)
@@ -371,6 +401,9 @@ static int build_row_in_schema_order(const ColDef *schema, int schema_count,
     return 0;
 }
 
+/* 입력: 테이블 CSV 경로, row 배열, row 길이
+ * 동작: row 하나를 파일 끝에 추가 저장
+ * 반환: 저장 성공 0, 파일 열기/쓰기 실패 -1 */
 static int append_csv_row(const char *table_path, char **row, int row_count)
 {
     FILE *fp;
@@ -394,6 +427,9 @@ static int append_csv_row(const char *table_path, char **row, int row_count)
     return 0;
 }
 
+/* 입력: 출력 파일 포인터, row 배열, row 길이
+ * 동작: 각 field를 CSV 규칙에 맞게 써서 row 한 줄 생성
+ * 반환: 직렬화 성공 0, 쓰기 실패 -1 */
 static int write_csv_row(FILE *fp, char **row, int row_count)
 {
     int i;
@@ -415,6 +451,9 @@ static int write_csv_row(FILE *fp, char **row, int row_count)
     return 0;
 }
 
+/* 입력: 출력 파일 포인터, field 문자열
+ * 동작: 쉼표/따옴표/개행이 있으면 quote escape 규칙을 적용해 field 하나 출력
+ * 반환: 출력 성공 0, 쓰기 실패 -1 */
 static int write_csv_field(FILE *fp, const char *value)
 {
     const char *cursor = value == NULL ? "" : value;
@@ -459,6 +498,9 @@ static int write_csv_field(FILE *fp, const char *value)
     return 0;
 }
 
+/* 입력: schema 배열, schema 개수, WHERE 배열, WHERE 개수
+ * 동작: 단일 WHERE의 컬럼 존재 여부, 연산자 지원 여부, literal 타입 적합성 확인
+ * 반환: 성공 시 대상 컬럼 index를 out_where_index에 쓰고 0, 실패 -1 */
 static int validate_delete_clause(const ColDef *schema, int schema_count,
                                   WhereClause *where, int where_count,
                                   int *out_where_index)
@@ -502,6 +544,9 @@ static int validate_delete_clause(const ColDef *schema, int schema_count,
     return 0;
 }
 
+/* 입력: 원본 테이블 경로, 임시 파일 경로, schema, optional WHERE 정보
+ * 동작: 테이블을 record 단위로 읽고 DELETE 조건에 안 맞는 row만 temp 파일에 재저장
+ * 반환: 재작성 성공 0, CSV 파싱/쓰기/파일 교체 실패 -1 */
 static int delete_rows_from_table(const char *table_path, const char *temp_path,
                                   const ColDef *schema, int schema_count,
                                   WhereClause *where, int where_count,
@@ -600,6 +645,9 @@ cleanup:
     return status;
 }
 
+/* 입력: CSV 파일 포인터, 결과 레코드 문자열 포인터
+ * 동작: quoted field 안의 개행을 보존하면서 레코드 한 개를 문자열로 읽음
+ * 반환: 레코드 1개 읽음 1, EOF 0, malformed CSV/메모리 오류 -1 */
 static int read_csv_record(FILE *fp, char **out_record)
 {
     char *buffer = NULL;
@@ -676,6 +724,9 @@ static int read_csv_record(FILE *fp, char **out_record)
     return 1;
 }
 
+/* 입력: 레코드 문자열, 결과 field 배열 포인터, 결과 field 개수 포인터
+ * 동작: quote escape 규칙을 적용해 CSV 레코드를 문자열 배열로 파싱
+ * 반환: 파싱 성공 0, malformed CSV/메모리 오류 -1 */
 static int parse_csv_record(const char *record, char ***out_fields, int *out_count)
 {
     char **fields = NULL;
@@ -774,6 +825,9 @@ static int parse_csv_record(const char *record, char ***out_fields, int *out_cou
     return 0;
 }
 
+/* 입력: 가변 버퍼 포인터와 길이/용량, 추가할 문자
+ * 동작: 필요 시 realloc 후 버퍼 끝에 문자 1개 append
+ * 반환: 성공 0, 메모리 확보 실패 -1 */
 static int append_char(char **buffer, size_t *len, size_t *cap, char ch)
 {
     char *grown_buffer;
@@ -799,6 +853,9 @@ static int append_char(char **buffer, size_t *len, size_t *cap, char ch)
     return 0;
 }
 
+/* 입력: field 배열, 현재 개수, 조립 중인 field 버퍼
+ * 동작: field 버퍼를 완성된 문자열로 확정해서 fields 배열 뒤에 추가
+ * 반환: 성공 0, 메모리 오류 -1 */
 static int push_field(char ***fields, int *field_count,
                       char **field_buffer, size_t *field_len, size_t *field_cap)
 {
@@ -837,6 +894,9 @@ static int push_field(char ***fields, int *field_count,
     return 0;
 }
 
+/* 입력: schema, 현재 row, optional WHERE 정보
+ * 동작: 전체 삭제면 항상 match, 단일 WHERE면 대상 컬럼 값과 literal을 비교
+ * 반환: 비교 성공 0, 결과는 out_match에 기록, 비교 불가면 -1 */
 static int row_matches_delete(const ColDef *schema, char **row, int row_count,
                               WhereClause *where, int where_count,
                               int where_index, int *out_match)
@@ -861,6 +921,9 @@ static int row_matches_delete(const ColDef *schema, char **row, int row_count,
                                  out_match);
 }
 
+/* 입력: 컬럼 타입, 왼쪽 row 값, 연산자, 오른쪽 literal
+ * 동작: 타입별 파싱/비교 규칙에 따라 WHERE 조건의 참/거짓 계산
+ * 반환: 비교 성공 0, 결과는 out_match에 기록, 타입 부적합/지원 안 함이면 -1 */
 static int compare_value_by_type(ColumnType type, const char *left,
                                  const char *op, const char *right,
                                  int *out_match)
@@ -936,6 +999,9 @@ static int compare_value_by_type(ColumnType type, const char *left,
     return -1;
 }
 
+/* 입력: 삼항 비교 결과 cmp, SQL 연산자 문자열
+ * 동작: cmp 값을 =, !=, >, <, >=, <= 의미에 맞춰 bool 결과로 변환
+ * 반환: 지원 연산자면 0, 알 수 없는 연산자면 -1 */
 static int compare_ordering_result(int cmp, const char *op, int *out_match)
 {
     if (strcmp(op, "=") == 0) {
@@ -957,6 +1023,9 @@ static int compare_ordering_result(int cmp, const char *op, int *out_match)
     return 0;
 }
 
+/* 입력: 숫자 문자열, 결과 long 포인터
+ * 동작: 문자열 전체가 정수인지 검사하면서 strtol로 변환
+ * 반환: 파싱 성공 0, 숫자가 아니면 -1 */
 static int parse_long_value(const char *text, long *out_value)
 {
     char *end = NULL;
@@ -976,6 +1045,9 @@ static int parse_long_value(const char *text, long *out_value)
     return 0;
 }
 
+/* 입력: 숫자 문자열, 결과 double 포인터
+ * 동작: 문자열 전체가 실수인지 검사하면서 strtod로 변환
+ * 반환: 파싱 성공 0, 숫자가 아니면 -1 */
 static int parse_double_value(const char *text, double *out_value)
 {
     char *end = NULL;
@@ -995,6 +1067,9 @@ static int parse_double_value(const char *text, double *out_value)
     return 0;
 }
 
+/* 입력: boolean 문자열, 결과 int 포인터
+ * 동작: true/false/1/0 형태를 내부 0 또는 1 값으로 변환
+ * 반환: 파싱 성공 0, boolean으로 해석 불가면 -1 */
 static int parse_boolean_value(const char *text, int *out_value)
 {
     if (text == NULL || out_value == NULL) {
@@ -1014,6 +1089,9 @@ static int parse_boolean_value(const char *text, int *out_value)
     return -1;
 }
 
+/* 입력: 비교할 텍스트, LIKE 패턴
+ * 동작: %와 _를 SQL LIKE 규칙으로 해석해 문자열 일치 여부 계산
+ * 반환: match면 1, 아니면 0 */
 static int like_match(const char *text, const char *pattern)
 {
     while (*pattern != '\0') {
@@ -1057,6 +1135,9 @@ static int like_match(const char *text, const char *pattern)
     return *text == '\0';
 }
 
+/* 입력: 원본 테이블 경로, 임시 파일 경로
+ * 동작: 기존 테이블 파일을 지우고 temp 파일을 실제 테이블 이름으로 교체
+ * 반환: 교체 성공 0, 파일 시스템 오류면 -1 */
 static int replace_table_file(const char *table_path, const char *temp_path)
 {
     if (remove(table_path) != 0) {
@@ -1070,6 +1151,9 @@ static int replace_table_file(const char *table_path, const char *temp_path)
     return 0;
 }
 
+/* 입력: SQL 연산자 문자열
+ * 동작: DELETE v1에서 구현한 연산자인지 확인
+ * 반환: 지원하면 1, 아니면 0 */
 static int is_supported_operator(const char *op)
 {
     return strcmp(op, "=") == 0 ||
@@ -1081,6 +1165,9 @@ static int is_supported_operator(const char *op)
            strcmp(op, "LIKE") == 0;
 }
 
+/* 입력: 컬럼 타입, SQL 연산자 문자열
+ * 동작: 타입별 비교 규칙에 맞는 연산자만 허용
+ * 반환: 허용되면 1, 아니면 0 */
 static int is_supported_operator_for_type(ColumnType type, const char *op)
 {
     switch (type) {
@@ -1100,6 +1187,9 @@ static int is_supported_operator_for_type(ColumnType type, const char *op)
     return 0;
 }
 
+/* 입력: 컬럼 타입, SQL 연산자, WHERE literal 문자열
+ * 동작: 실제 row 비교 전에 literal 자체가 해당 타입으로 해석 가능한지 점검
+ * 반환: 유효하면 0, 타입과 안 맞으면 -1 */
 static int validate_literal_for_type(ColumnType type, const char *op, const char *value)
 {
     long long_value;
@@ -1127,6 +1217,9 @@ static int validate_literal_for_type(ColumnType type, const char *op, const char
     return -1;
 }
 
+/* 입력: 동적 문자열 배열, 배열 길이
+ * 동작: 각 문자열과 배열 본체를 모두 해제
+ * 반환: 없음 */
 static void free_string_array(char **arr, int count)
 {
     int i;
@@ -1142,6 +1235,9 @@ static void free_string_array(char **arr, int count)
     free(arr);
 }
 
+/* 입력: 원본 문자열
+ * 동작: NULL은 빈 문자열로 보고 새 복사본을 할당
+ * 반환: 새 문자열 포인터, 메모리 부족이면 NULL */
 static char *dup_string(const char *src)
 {
     const char *text = src == NULL ? "" : src;
@@ -1156,6 +1252,9 @@ static char *dup_string(const char *src)
     return copy;
 }
 
+/* 입력: 수정 가능한 문자열 버퍼
+ * 동작: 앞뒤 공백 문자를 제자리에서 제거해 trim 결과 시작 위치를 반환
+ * 반환: trim 된 문자열 시작 포인터 */
 static char *trim_whitespace(char *text)
 {
     char *end;
@@ -1173,6 +1272,9 @@ static char *trim_whitespace(char *text)
     return text;
 }
 
+/* 입력: 비교할 두 문자열
+ * 동작: ASCII 기준 대소문자를 무시하고 같은 문자열인지 비교
+ * 반환: 같으면 1, 다르면 0 */
 static int equals_ignore_case(const char *left, const char *right)
 {
     while (*left != '\0' && *right != '\0') {
@@ -1186,6 +1288,9 @@ static int equals_ignore_case(const char *left, const char *right)
     return *left == '\0' && *right == '\0';
 }
 
+/* 입력: schema에 적힌 타입 문자열, 결과 enum 포인터
+ * 동작: INT/VARCHAR/FLOAT/BOOLEAN/DATE/DATETIME 문자열을 enum으로 변환
+ * 반환: 변환 성공 0, 알 수 없는 타입이면 -1 */
 static int parse_column_type(const char *text, ColumnType *out_type)
 {
     if (text == NULL || out_type == NULL) {
