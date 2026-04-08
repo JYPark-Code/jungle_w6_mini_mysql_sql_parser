@@ -5,5 +5,8 @@ build/
 *.out
 sqlparser
 test_runner
+test_storage_insert
+test_storage_delete
+test_storage_update
 data/*.csv
 data/*.schema
