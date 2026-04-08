@@ -402,7 +402,11 @@ static void parse_insert(TokenList *t, ParsedSQL *sql) {
     sql->values = parse_ident_list(t, &sql->val_count);    /* 값들 */
 }
 
-/* SELECT col1, col2 | * FROM name [WHERE ...] [ORDER BY ...] [LIMIT N] */
+/* SELECT col1, col2 | * FROM name [WHERE ...] [ORDER BY ...] [LIMIT N]
+ *
+ * 컬럼 자리에는 일반 식별자 외에 함수 호출형 (`COUNT(*)`, `SUM(price)` 등) 이
+ * 올 수 있다. 토크나이저는 `COUNT`, `(`, `*`, `)` 4개 토큰으로 자르므로
+ * 여기서 다음 토큰이 `(` 면 닫는 `)` 까지 이어붙여 한 컬럼 문자열로 만든다. */
 static void parse_select(TokenList *t, ParsedSQL *sql) {
     sql->type = QUERY_SELECT;
 
@@ -414,7 +418,39 @@ static void parse_select(TokenList *t, ParsedSQL *sql) {
             cap *= 2;
             sql->columns = realloc(sql->columns, cap * sizeof(char *));
         }
-        sql->columns[sql->col_count++] = strdup(advance(t));
+
+        /* 컬럼 이름 한 토큰 읽기. */
+        const char *first = advance(t);
+        if (!first) break;
+
+        char colbuf[160];
+        size_t pos = 0;
+        size_t flen = strlen(first);
+        if (flen >= sizeof(colbuf)) flen = sizeof(colbuf) - 1;
+        memcpy(colbuf, first, flen);
+        pos = flen;
+        colbuf[pos] = '\0';
+
+        /* 다음 토큰이 '(' 면 함수 호출형 (COUNT(*), SUM(x) 등).
+         * 닫는 ')' 까지 모든 토큰을 순서대로 이어붙인다. */
+        if (peek(t) && strcmp(peek(t), "(") == 0) {
+            advance(t);  /* '(' 소비 */
+            if (pos < sizeof(colbuf) - 1) colbuf[pos++] = '(';
+            while (peek(t) && strcmp(peek(t), ")") != 0) {
+                const char *inner = advance(t);
+                size_t ilen = strlen(inner);
+                if (pos + ilen >= sizeof(colbuf) - 1) ilen = sizeof(colbuf) - 1 - pos;
+                memcpy(colbuf + pos, inner, ilen);
+                pos += ilen;
+            }
+            if (peek(t) && strcmp(peek(t), ")") == 0) {
+                advance(t);  /* ')' 소비 */
+                if (pos < sizeof(colbuf) - 1) colbuf[pos++] = ')';
+            }
+            colbuf[pos] = '\0';
+        }
+
+        sql->columns[sql->col_count++] = strdup(colbuf);
         if (!match(t, ",")) break;
     }
 
