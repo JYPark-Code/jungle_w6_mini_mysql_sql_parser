@@ -6,11 +6,16 @@
 
 #ifdef _WIN32
 #include <direct.h>
+#include <sys/stat.h>
 #define MKDIR(path) _mkdir(path)
+#define STAT_STRUCT struct _stat
+#define STAT_FUNC _stat
 #else
 #include <sys/stat.h>
 #include <sys/types.h>
 #define MKDIR(path) mkdir(path, 0775)
+#define STAT_STRUCT struct stat
+#define STAT_FUNC stat
 #endif
 
 #include "types.h"
@@ -492,6 +497,7 @@ static int build_table_path(const char *table, char *out, size_t size)
 {
     int written;
     char legacy_path[STORAGE_PATH_MAX];
+    char nested_schema_path[STORAGE_PATH_MAX];
 
     written = snprintf(out, size, "data/tables/%s.csv", table);
     if (written < 0 || (size_t)written >= size) {
@@ -503,7 +509,12 @@ static int build_table_path(const char *table, char *out, size_t size)
         return -1;
     }
 
-    if (path_exists(out)) {
+    written = snprintf(nested_schema_path, sizeof(nested_schema_path), "data/schema/%s.schema", table);
+    if (written < 0 || (size_t)written >= sizeof(nested_schema_path)) {
+        return -1;
+    }
+
+    if (path_exists(out) || path_exists(nested_schema_path)) {
         return 0;
     }
 
@@ -524,6 +535,8 @@ static int build_temp_path(const char *table, char *out, size_t size)
 {
     int written;
     char legacy_table_path[STORAGE_PATH_MAX];
+    char nested_table_path[STORAGE_PATH_MAX];
+    char nested_schema_path[STORAGE_PATH_MAX];
 
     written = snprintf(out, size, "data/tables/%s.csv.tmp", table);
     if (written < 0 || (size_t)written >= size) {
@@ -535,7 +548,18 @@ static int build_temp_path(const char *table, char *out, size_t size)
         return -1;
     }
 
-    if (!path_exists(out) && path_exists(legacy_table_path)) {
+    written = snprintf(nested_table_path, sizeof(nested_table_path), "data/tables/%s.csv", table);
+    if (written < 0 || (size_t)written >= sizeof(nested_table_path)) {
+        return -1;
+    }
+
+    written = snprintf(nested_schema_path, sizeof(nested_schema_path), "data/schema/%s.schema", table);
+    if (written < 0 || (size_t)written >= sizeof(nested_schema_path)) {
+        return -1;
+    }
+
+    if (!path_exists(nested_table_path) && !path_exists(nested_schema_path) &&
+        path_exists(legacy_table_path)) {
         written = snprintf(out, size, "data/%s.csv.tmp", table);
         if (written < 0 || (size_t)written >= size) {
             return -1;
