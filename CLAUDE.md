@@ -120,34 +120,36 @@
 
 ---
 
-## 머지 포인트 (Phase 1)
+## 머지 포인트 (Phase 1) — ✅ 모두 완료
 
-### MP1 — 인터페이스 계약 (Day 1, 지용)
-- [ ] `types.h` 에 RowSet, 새 함수 선언, WhereClause 결합자 배열 (필요 시)
-- [ ] dev2 에 머지
-- [ ] 석제/원우에게 alert + 본인 브랜치 rebase
+### MP1 — 인터페이스 계약 (지용) — PR #29 ✅
+- [x] `types.h` 에 RowSet 구조체, `where_links` 필드, 새 함수 선언
+- [x] dev2 에 머지
+- [x] 석제/원우에게 alert + 본인 브랜치 rebase
 
-### MP2 — 각자 PR 머지
-- [ ] 지용 — RowSet 인프라 + 집계 함수 실행 (`feature/p1-rowset`)
-- [ ] 석제 — Parser stop set + N-ary WHERE + 집계 컬럼 회귀 (`feature/p1-parser-stop-set`)
-- [ ] 원우 — UPDATE/DELETE 시그니처 통일 + N-ary WHERE 평가 (`feature/p1-compound-where`)
+### MP2 — 각자 PR 머지 ✅
+- [x] 지용 — RowSet 인프라 + 집계 함수 5종 (`feature/p1-rowset`) — **PR #30**
+- [x] 원우 — UPDATE/DELETE 시그니처 통일 + N-ary WHERE 평가 (`feature/p1-compound-where`) — **PR #32**
+- [x] 석제 — Parser stop set + N-ary WHERE + 출력 모듈 갱신 (`feature/p1-parser-stop-set`) — **PR #33**
+  - 옵션 B Mixed Merge 로 처리 (원우 PR 과 함수 단위 비교 후 베스트 통합)
 
-각 PR 은 1주차와 동일 워크플로:
-- CI green 필수
-- PM 코드 리뷰
-- valgrind 누수 0
-- 단위 테스트 추가
+각 PR 1주차와 동일 워크플로 적용:
+- ✅ CI green
+- ✅ PM 코드 리뷰
+- ✅ valgrind 누수 0 (5 바이너리 모두)
+- ✅ 단위 테스트 추가
 
-### MP3 — Phase 1 통합
-- [ ] 세 PR 모두 머지된 dev2 에서 빌드 무경고
-- [ ] 기존 1주차 단위 테스트 모두 통과 (회귀 0)
-- [ ] 새 단위 테스트 (RowSet, N-ary WHERE) 통과
-- [ ] valgrind 누수 0
-- [ ] CLI / 브라우저 뷰어 동작 동일 확인
+### MP3 — Phase 1 통합 ✅
+- [x] 세 PR 모두 머지된 dev2 에서 빌드 무경고
+- [x] 1주차 단위 테스트 회귀 0 (201 → 197 + 30 신규 = 227 통과)
+- [x] 새 단위 테스트 (RowSet 30 + N-ary WHERE) 통과
+- [x] valgrind 누수 0
+- [x] CLI / 브라우저 뷰어 동작 동일 확인
 
-### MP4 — dev2 → main 머지
-- [ ] dev2 → main PR
-- [ ] 1주차와 동일하게 admin 머지
+### MP4 — dev2 → main 머지 ✅ (PR #34)
+- [x] dev2 → main PR
+- [x] admin 머지 — main `142efad`
+- [x] README 1차 → 후속 흐름 갱신 (`29ad185`)
 
 ---
 
