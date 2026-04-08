@@ -114,6 +114,25 @@ static void test_free_null(void) {
     g_pass++;
 }
 
+static void test_sql_line_comment(void) {
+    SECTION("SQL 라인 주석 (-- ...)");
+    ParsedSQL *s = parse_sql(
+        "-- this is a comment\n"
+        "CREATE TABLE t (id INT)");
+    CHECK(s->type == QUERY_CREATE, "comment skipped, CREATE parsed");
+    CHECK(strcmp(s->table, "t") == 0, "table after comment");
+    CHECK(s->col_def_count == 1, "col after comment");
+    free_parsed(s);
+
+    /* 중간 주석 */
+    ParsedSQL *s2 = parse_sql(
+        "SELECT id -- pick id\n"
+        "FROM users");
+    CHECK(s2->type == QUERY_SELECT, "mid-comment SELECT");
+    CHECK(strcmp(s2->table, "users") == 0, "table after mid comment");
+    free_parsed(s2);
+}
+
 /* ─── AST 출력 (print_ast) 테스트 ─────────────────────────── */
 
 static char *capture_ast(const char *sql_text) {
@@ -249,6 +268,7 @@ int main(void) {
     test_delete();
     test_update();
     test_free_null();
+    test_sql_line_comment();
 
     test_ast_create();
     test_ast_select();

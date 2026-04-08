@@ -62,6 +62,12 @@ static TokenList *tokenize(const char *input) {
         /* 공백 스킵 */
         if (isspace((unsigned char)*p)) { p++; continue; }
 
+        /* SQL 한 줄 주석: -- ... \n */
+        if (*p == '-' && *(p + 1) == '-') {
+            while (*p && *p != '\n') p++;
+            continue;
+        }
+
         /* 따옴표 문자열: 'foo bar' 또는 "foo bar" */
         if (*p == '\'' || *p == '"') {
             char quote = *p++;
