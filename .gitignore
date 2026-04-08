@@ -3,4 +3,9 @@ build/
 *.o
 *.exe
 *.out
-docs/
+sqlparser
+test_runner
+test_storage_insert
+test_storage_delete
+test_storage_update
+data/
