@@ -1,0 +1,271 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>MiniSQL Viewer</title>
+<style>
+  :root {
+    --bg: #0d1117;
+    --panel: #161b22;
+    --border: #30363d;
+    --text: #c9d1d9;
+    --muted: #8b949e;
+    --accent: #58a6ff;
+    --success: #3fb950;
+    --error: #f85149;
+    --code: #1f2428;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0;
+    padding: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    height: 100%;
+  }
+  header {
+    padding: 16px 24px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+  header h1 {
+    font-size: 18px;
+    margin: 0;
+    font-weight: 600;
+  }
+  header .badge {
+    font-size: 11px;
+    padding: 2px 8px;
+    border-radius: 12px;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    color: var(--muted);
+  }
+  main {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+    padding: 16px 24px;
+    height: calc(100vh - 56px);
+  }
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  .panel-header {
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--border);
+    font-size: 13px;
+    color: var(--muted);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  textarea {
+    flex: 1;
+    background: var(--code);
+    color: var(--text);
+    border: none;
+    padding: 14px;
+    font-family: "JetBrains Mono", "Menlo", "Monaco", monospace;
+    font-size: 13px;
+    line-height: 1.6;
+    resize: none;
+    outline: none;
+  }
+  .actions {
+    padding: 10px 14px;
+    border-top: 1px solid var(--border);
+    display: flex;
+    gap: 8px;
+    align-items: center;
+  }
+  button {
+    background: var(--accent);
+    color: #0d1117;
+    border: none;
+    padding: 6px 14px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 13px;
+    font-weight: 600;
+  }
+  button:hover { filter: brightness(1.1); }
+  button:disabled { opacity: 0.5; cursor: not-allowed; }
+  button.secondary {
+    background: var(--panel);
+    color: var(--text);
+    border: 1px solid var(--border);
+  }
+  .status {
+    margin-left: auto;
+    font-size: 12px;
+    color: var(--muted);
+  }
+  .status.ok { color: var(--success); }
+  .status.err { color: var(--error); }
+  pre {
+    flex: 1;
+    margin: 0;
+    padding: 14px;
+    background: var(--code);
+    overflow: auto;
+    font-family: "JetBrains Mono", "Menlo", monospace;
+    font-size: 12px;
+    line-height: 1.6;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  .stmt {
+    border-left: 3px solid var(--accent);
+    padding: 6px 12px;
+    margin-bottom: 10px;
+    background: rgba(88, 166, 255, 0.05);
+  }
+  .stmt-type {
+    font-size: 11px;
+    color: var(--accent);
+    font-weight: 600;
+    margin-bottom: 4px;
+  }
+  .stderr {
+    color: var(--muted);
+    font-size: 11px;
+    padding-top: 8px;
+    border-top: 1px dashed var(--border);
+    margin-top: 10px;
+  }
+  kbd {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 1px 5px;
+    font-size: 11px;
+    color: var(--muted);
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>MiniSQL Viewer</h1>
+  <span class="badge">parser → JSON → 표시</span>
+</header>
+
+<main>
+  <section class="panel">
+    <div class="panel-header">
+      <span>SQL 입력</span>
+      <span><kbd>Ctrl</kbd> + <kbd>Enter</kbd> 실행</span>
+    </div>
+    <textarea id="sql" spellcheck="false">CREATE TABLE users (id INT, name VARCHAR, age INT, joined DATE);
+INSERT INTO users (id, name, age, joined) VALUES (1, 'alice', 25, '2024-01-15');
+INSERT INTO users (id, name, age, joined) VALUES (2, 'bob', 31, '2024-03-02');
+SELECT id, name FROM users WHERE age > 26 ORDER BY name DESC LIMIT 5;
+DELETE FROM users WHERE id = 1;</textarea>
+    <div class="actions">
+      <button id="run">▶ Run</button>
+      <button id="clear" class="secondary">Clear</button>
+      <span id="status" class="status">대기 중</span>
+    </div>
+  </section>
+
+  <section class="panel">
+    <div class="panel-header">
+      <span>파싱 결과</span>
+      <span id="stmt-count"></span>
+    </div>
+    <pre id="output">결과가 여기에 표시됩니다.</pre>
+  </section>
+</main>
+
+<script>
+  const $sql       = document.getElementById('sql');
+  const $run       = document.getElementById('run');
+  const $clear     = document.getElementById('clear');
+  const $status    = document.getElementById('status');
+  const $output    = document.getElementById('output');
+  const $stmtCount = document.getElementById('stmt-count');
+
+  function setStatus(text, kind) {
+    $status.textContent = text;
+    $status.className = 'status' + (kind ? ' ' + kind : '');
+  }
+
+  function escapeHtml(s) {
+    return String(s)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;');
+  }
+
+  function renderResult(result) {
+    if (result.error) {
+      $output.innerHTML = `<span style="color:var(--error)">${escapeHtml(result.error)}</span>`;
+      $stmtCount.textContent = '';
+      return;
+    }
+    const stmts = result.statements || [];
+    $stmtCount.textContent = `${stmts.length} statement${stmts.length === 1 ? '' : 's'}`;
+
+    let html = '';
+    for (const s of stmts) {
+      const type = s.type || 'UNKNOWN';
+      const pretty = JSON.stringify(s, null, 2);
+      html += `<div class="stmt"><div class="stmt-type">${escapeHtml(type)}</div>${escapeHtml(pretty)}</div>`;
+    }
+    if (result.stderr && result.stderr.trim()) {
+      html += `<div class="stderr">stderr:\n${escapeHtml(result.stderr)}</div>`;
+    }
+    $output.innerHTML = html || '(빈 결과)';
+  }
+
+  async function runQuery() {
+    const sql = $sql.value.trim();
+    if (!sql) { setStatus('SQL 비어있음', 'err'); return; }
+
+    $run.disabled = true;
+    setStatus('파싱 중...');
+
+    try {
+      const res = await fetch('/query', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sql }),
+      });
+      const data = await res.json();
+      renderResult(data);
+      setStatus(res.ok ? '완료' : '에러', res.ok ? 'ok' : 'err');
+    } catch (e) {
+      $output.innerHTML = `<span style="color:var(--error)">요청 실패: ${escapeHtml(e.message)}</span>`;
+      setStatus('네트워크 에러', 'err');
+    } finally {
+      $run.disabled = false;
+    }
+  }
+
+  $run.addEventListener('click', runQuery);
+  $clear.addEventListener('click', () => {
+    $sql.value = '';
+    $output.textContent = '결과가 여기에 표시됩니다.';
+    $stmtCount.textContent = '';
+    setStatus('대기 중');
+  });
+  $sql.addEventListener('keydown', (e) => {
+    if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+      e.preventDefault();
+      runQuery();
+    }
+  });
+</script>
+
+</body>
+</html>
