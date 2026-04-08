@@ -1,0 +1,8 @@
+# Keep repository text files normalized to LF so Windows host Git and Linux dev containers
+# see the same contents and stop reporting EOL-only noise as file changes.
+* text=auto eol=lf
+
+# Windows command scripts keep CRLF for native execution.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
