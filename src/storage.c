@@ -254,15 +254,32 @@ int storage_select_result(const char *table, ParsedSQL *sql, RowSet **out)
 
     if (build_schema_path(table, schema_path, sizeof(schema_path)) != 0 ||
         build_table_path(table, table_path, sizeof(table_path)) != 0) {
+        fprintf(stderr, "[storage] SELECT: cannot build path for table '%s'\n", table);
         return -1;
     }
 
     if (load_schema(schema_path, &schema, &schema_count) != 0) {
+        fprintf(stderr, "[storage] SELECT: table '%s' not found (schema missing)\n", table);
         return -1;
     }
 
     if (load_table_rows(table_path, schema_count, &rows) != 0) {
+        fprintf(stderr, "[storage] SELECT: cannot read table '%s'\n", table);
         goto cleanup;
+    }
+
+    /* WHERE 컬럼 사전 검증 — 빈 테이블 때문에 evaluate_select_clause 가
+     * 호출되지 않아도 컬럼 오타를 잡아준다. */
+    if (sql->where_count > 0 && sql->where != NULL) {
+        int wi;
+        int bad = 0;
+        for (wi = 0; wi < sql->where_count; wi++) {
+            if (find_schema_index(schema, schema_count, sql->where[wi].column) < 0) {
+                fprintf(stderr, "[storage] WHERE column not found: %s\n", sql->where[wi].column);
+                bad = 1;
+            }
+        }
+        if (bad) goto cleanup;
     }
 
     if (collect_matching_rows(sql, schema, schema_count, &rows, &selection) != 0) {
@@ -2171,14 +2188,24 @@ static int evaluate_select_clause(const ColDef *schema, int schema_count,
 
     column_index = find_schema_index(schema, schema_count, clause->column);
     if (column_index < 0 || column_index >= row_count) {
+        fprintf(stderr, "[storage] WHERE column not found: %s\n", clause->column);
         return -1;
     }
 
     strip_optional_quotes(clause->value, literal, sizeof(literal));
 
-    if (!is_supported_operator(clause->op) ||
-        !is_supported_operator_for_type(schema[column_index].type, clause->op) ||
-        validate_literal_for_type(schema[column_index].type, clause->op, literal) != 0) {
+    if (!is_supported_operator(clause->op)) {
+        fprintf(stderr, "[storage] unsupported WHERE operator: %s\n", clause->op);
+        return -1;
+    }
+    if (!is_supported_operator_for_type(schema[column_index].type, clause->op)) {
+        fprintf(stderr, "[storage] operator '%s' not allowed on column '%s' of given type\n",
+                clause->op, clause->column);
+        return -1;
+    }
+    if (validate_literal_for_type(schema[column_index].type, clause->op, literal) != 0) {
+        fprintf(stderr, "[storage] WHERE value '%s' invalid for column '%s'\n",
+                literal, clause->column);
         return -1;
     }
 
@@ -2424,6 +2451,7 @@ static int resolve_selected_columns(const ParsedSQL *sql, const ColDef *schema, 
     for (index = 0; index < sql->col_count; ++index) {
         indices[index] = find_schema_index(schema, schema_count, sql->columns[index]);
         if (indices[index] < 0) {
+            fprintf(stderr, "[storage] SELECT column not found: %s\n", sql->columns[index]);
             free(indices);
             return -1;
         }
