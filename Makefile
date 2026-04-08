@@ -21,8 +21,9 @@ TEST_SRCS = $(TEST_DIR)/test_parser.c \
             $(SRC_DIR)/executor.c \
             $(SRC_DIR)/storage.c
 
-STORAGE_TEST_TARGETS = test_storage_insert test_storage_delete test_storage_update
+STORAGE_TEST_TARGETS = test_storage_insert test_storage_delete test_storage_update test_storage_select_result
 STORAGE_TEST_DEPS = $(SRC_DIR)/storage.c
+SELECT_RESULT_DEPS = $(SRC_DIR)/storage.c $(SRC_DIR)/parser.c
 
 TARGET  = sqlparser
 TEST_TARGET = test_runner
@@ -46,6 +47,10 @@ test_storage_delete: $(TEST_DIR)/test_storage_delete.c $(STORAGE_TEST_DEPS)
 	./$@
 
 test_storage_update: $(TEST_DIR)/test_storage_update.c $(STORAGE_TEST_DEPS)
+	$(CC) $(CFLAGS) -o $@ $^
+	./$@
+
+test_storage_select_result: $(TEST_DIR)/test_storage_select_result.c $(SELECT_RESULT_DEPS)
 	$(CC) $(CFLAGS) -o $@ $^
 	./$@
 
