@@ -99,8 +99,8 @@
     flex: 1;
     height: auto !important;
     font-family: "JetBrains Mono", "Menlo", "Monaco", monospace;
-    font-size: 13px;
-    line-height: 1.6;
+    font-size: 15px;
+    line-height: 1.65;
   }
   /* CodeMirror 다크 테마와 우리 패널 색을 어울리게 미세 조정 */
   .cm-s-dracula.CodeMirror, .cm-s-dracula .CodeMirror-gutters {
@@ -115,10 +115,87 @@
     border: none;
     padding: 14px;
     font-family: "JetBrains Mono", monospace;
-    font-size: 13px;
-    line-height: 1.6;
+    font-size: 15px;
+    line-height: 1.65;
     resize: none;
     outline: none;
+  }
+
+  /* ─── 카드 뷰 (statement 별로 분리) ───────────────────── */
+  .cards-host {
+    flex: 1;
+    overflow: auto;
+    padding: 14px;
+    background: var(--code);
+  }
+  .stmt-card {
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--accent);
+    border-radius: 6px;
+    margin-bottom: 12px;
+    background: var(--panel);
+    overflow: hidden;
+  }
+  .stmt-card:last-child { margin-bottom: 0; }
+  .stmt-card-head {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 14px;
+    background: rgba(88, 166, 255, 0.08);
+    border-bottom: 1px solid var(--border);
+    font-size: 12px;
+  }
+  .stmt-type-badge {
+    color: var(--accent);
+    font-weight: 700;
+    letter-spacing: 0.5px;
+  }
+  .stmt-table {
+    color: var(--muted);
+  }
+  .stmt-table::before { content: "→ "; }
+  .stmt-card-body {
+    padding: 12px 14px;
+    font-family: "JetBrains Mono", "Menlo", monospace;
+    font-size: 14px;
+    line-height: 1.65;
+    white-space: pre-wrap;
+    word-break: break-word;
+    color: var(--text);
+  }
+  /* 카드 안 JSON 컬러링 */
+  .json-key   { color: #8be9fd; }   /* cyan  — 키 */
+  .json-str   { color: #f1fa8c; }   /* yellow — 문자열 */
+  .json-num   { color: #bd93f9; }   /* purple — 숫자 */
+  .json-bool  { color: #ff79c6; }   /* pink   — true/false */
+  .json-null  { color: #ff79c6; }
+  .json-punct { color: var(--muted); }
+
+  /* 토글 스위치 */
+  .view-toggle {
+    display: inline-flex;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    overflow: hidden;
+  }
+  .view-toggle button {
+    background: transparent;
+    color: var(--muted);
+    border: none;
+    padding: 4px 12px;
+    font-size: 11px;
+    font-weight: 600;
+    cursor: pointer;
+    border-radius: 0;
+  }
+  .view-toggle button.active {
+    background: var(--accent);
+    color: var(--bg);
+  }
+  .view-toggle button:hover:not(.active) {
+    color: var(--text);
   }
 
   .actions {
@@ -202,15 +279,29 @@ DELETE FROM users WHERE id = 1;</textarea>
     </div>
   </section>
 
-  <!-- 오른쪽: 파싱 결과 (CodeMirror JSON 뷰, read-only) -->
+  <!-- 오른쪽: 파싱 결과 (Cards / JSON 토글) -->
   <section class="panel">
     <div class="panel-header">
-      <span>파싱 결과 (JSON)</span>
-      <span id="stmt-count"></span>
+      <span>파싱 결과</span>
+      <div style="display:flex; gap:10px; align-items:center;">
+        <span id="stmt-count"></span>
+        <div class="view-toggle">
+          <button id="view-cards" class="active" type="button">Cards</button>
+          <button id="view-json" type="button">JSON</button>
+        </div>
+      </div>
     </div>
-    <div class="editor-host">
+
+    <!-- Card 뷰 (기본) -->
+    <div id="cards-host" class="cards-host">
+      <div style="color:var(--muted); padding:14px;">// Run 버튼을 눌러보세요.</div>
+    </div>
+
+    <!-- JSON 뷰 (CodeMirror) — 토글로 표시/숨김 -->
+    <div id="json-host" class="editor-host" style="display:none">
       <textarea id="output" class="fallback" readonly>// Run 버튼을 눌러보세요.</textarea>
     </div>
+
     <div id="meta" class="meta" style="display:none"></div>
   </section>
 
@@ -234,6 +325,14 @@ DELETE FROM users WHERE id = 1;</textarea>
   const $status         = document.getElementById('status');
   const $stmtCount      = document.getElementById('stmt-count');
   const $meta           = document.getElementById('meta');
+  const $cardsHost      = document.getElementById('cards-host');
+  const $jsonHost       = document.getElementById('json-host');
+  const $viewCards      = document.getElementById('view-cards');
+  const $viewJson       = document.getElementById('view-json');
+
+  /* 마지막 응답을 캐시해서 토글 시 다시 렌더 */
+  let lastResult = null;
+  let currentView = 'cards';   /* 기본: 카드 뷰 */
 
   // CodeMirror 인스턴스 (로드 실패 시 null 로 두고 textarea 폴백 사용)
   let sqlEditor = null;
@@ -297,10 +396,104 @@ DELETE FROM users WHERE id = 1;</textarea>
     $meta.className = 'meta' + (kind ? ' ' + kind : '');
   }
 
+  /* HTML escape (XSS 방지) */
+  function esc(s) {
+    return String(s)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;');
+  }
+
+  /* JSON 문자열을 받아 색칠된 HTML 로 변환 (정규식 기반).
+   * 카드 안에서 가벼운 신택스 컬러링용. CodeMirror 만큼 정밀하진 않지만
+   * 카드마다 별도 에디터 띄우는 부담을 피한다. */
+  function colorizeJson(jsonText) {
+    const escaped = esc(jsonText);
+    return escaped.replace(
+      /("(\\u[a-fA-F0-9]{4}|\\[^u]|[^\\"])*"(\s*:)?|\b(true|false|null)\b|-?\d+(\.\d+)?([eE][+-]?\d+)?)/g,
+      function (match) {
+        let cls = 'json-num';
+        if (/^"/.test(match)) {
+          cls = /:$/.test(match) ? 'json-key' : 'json-str';
+        } else if (/true|false/.test(match)) {
+          cls = 'json-bool';
+        } else if (/null/.test(match)) {
+          cls = 'json-null';
+        }
+        return '<span class="' + cls + '">' + match + '</span>';
+      }
+    );
+  }
+
+  /* 카드 뷰: statement 마다 type/table 헤더 + 색칠된 JSON 본문 */
+  function renderCards(stmts) {
+    if (!stmts || stmts.length === 0) {
+      $cardsHost.innerHTML =
+        '<div style="color:var(--muted); padding:14px;">// (빈 결과)</div>';
+      return;
+    }
+    let html = '';
+    for (const s of stmts) {
+      const type = s.type || (s.raw ? 'RAW' : 'UNKNOWN');
+      const table = s.table || '';
+      const body = s.raw
+        ? esc(s.raw)
+        : colorizeJson(JSON.stringify(s, null, 2));
+      html += '<div class="stmt-card">' +
+                '<div class="stmt-card-head">' +
+                  '<span class="stmt-type-badge">' + esc(type) + '</span>' +
+                  (table ? '<span class="stmt-table">' + esc(table) + '</span>' : '') +
+                '</div>' +
+                '<div class="stmt-card-body">' + body + '</div>' +
+              '</div>';
+    }
+    $cardsHost.innerHTML = html;
+  }
+
+  /* JSON 뷰: 한 덩어리 JSON 배열로 CodeMirror 에 표시 */
+  function renderJsonView(stmts) {
+    if (!stmts || stmts.length === 0) {
+      setOutputText('// (빈 결과)');
+    } else {
+      setOutputText(JSON.stringify(stmts, null, 2));
+    }
+    /* CodeMirror refresh — display:none → display:block 직후 폭 계산 보정 */
+    if (outEditor) setTimeout(function () { outEditor.refresh(); }, 0);
+  }
+
+  /* 캐시된 lastResult 를 현재 view 로 다시 렌더 */
+  function rerenderCurrentView() {
+    if (!lastResult) return;
+    const stmts = lastResult.statements || [];
+    if (currentView === 'cards') renderCards(stmts);
+    else                          renderJsonView(stmts);
+  }
+
+  /* 토글 버튼 클릭 핸들러 */
+  function setView(view) {
+    currentView = view;
+    if (view === 'cards') {
+      $cardsHost.style.display = '';
+      $jsonHost.style.display  = 'none';
+      $viewCards.classList.add('active');
+      $viewJson.classList.remove('active');
+    } else {
+      $cardsHost.style.display = 'none';
+      $jsonHost.style.display  = '';
+      $viewJson.classList.add('active');
+      $viewCards.classList.remove('active');
+    }
+    rerenderCurrentView();
+  }
+
   // 서버 응답 (result) 을 받아 화면에 그리기.
   function renderResult(result) {
-    // 에러가 있으면 에러 메시지 표시 후 종료.
+    lastResult = result;
+
+    // 에러가 있으면 양쪽 뷰 모두 에러 표시
     if (result.error) {
+      $cardsHost.innerHTML =
+        '<div style="color:var(--error); padding:14px;">' + esc(result.error) + '</div>';
       setOutputText('// ' + result.error);
       setMeta(result.error, 'err');
       $stmtCount.textContent = '';
@@ -311,14 +504,8 @@ DELETE FROM users WHERE id = 1;</textarea>
     $stmtCount.textContent =
       `${stmts.length} statement${stmts.length === 1 ? '' : 's'}`;
 
-    // 파싱된 모든 statement 를 하나의 JSON 배열로 보여준다.
-    // (server.py 가 raw 로 잡은 것들도 같이 표시되지만 이제 main.c
-    //  --json 격리 덕분에 거의 안 나와야 함.)
-    if (stmts.length === 0) {
-      setOutputText('// (빈 결과)');
-    } else {
-      setOutputText(JSON.stringify(stmts, null, 2));
-    }
+    /* 현재 활성화된 뷰만 그리고, 토글 시 lazy render */
+    rerenderCurrentView();
 
     // sqlparser 가 stderr 에 찍은 메시지가 있으면 하단에 별도 표시
     setMeta(result.stderr && result.stderr.trim() ? result.stderr : '');
@@ -352,8 +539,13 @@ DELETE FROM users WHERE id = 1;</textarea>
 
   // 이벤트 핸들러 등록
   $run.addEventListener('click', runQuery);
+  $viewCards.addEventListener('click', function () { setView('cards'); });
+  $viewJson.addEventListener('click',  function () { setView('json');  });
   $clear.addEventListener('click', () => {
     setSqlText('');
+    lastResult = null;
+    $cardsHost.innerHTML =
+      '<div style="color:var(--muted); padding:14px;">// Run 버튼을 눌러보세요.</div>';
     setOutputText('// Run 버튼을 눌러보세요.');
     setMeta('');
     $stmtCount.textContent = '';
