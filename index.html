@@ -172,47 +172,6 @@
   .json-null  { color: #ff79c6; }
   .json-punct { color: var(--muted); }
 
-  /* SELECT 결과 표 — 카드 안 inline 표시 */
-  .stmt-result-wrap {
-    margin-top: 12px;
-    padding-top: 10px;
-    border-top: 1px dashed var(--border);
-  }
-  .stmt-result-label {
-    font-size: 10px;
-    font-weight: 700;
-    color: var(--success);
-    letter-spacing: 0.5px;
-    margin-bottom: 6px;
-  }
-  .stmt-result-table {
-    background: var(--bg);
-    border: 1px solid var(--border);
-    border-radius: 4px;
-    padding: 10px 12px;
-    font-family: "JetBrains Mono", "Menlo", monospace;
-    font-size: 13px;
-    line-height: 1.6;
-    color: var(--text);
-    overflow-x: auto;
-    white-space: pre;
-  }
-  /* 결과 표의 헤더 줄 강조 (첫 줄) */
-  .stmt-result-table .result-header {
-    color: var(--accent);
-    font-weight: 600;
-    border-bottom: 1px solid var(--border);
-    padding-bottom: 4px;
-    margin-bottom: 4px;
-    display: block;
-  }
-  .stmt-result-table .result-footer {
-    color: var(--muted);
-    font-size: 11px;
-    margin-top: 4px;
-    display: block;
-  }
-
   /* 토글 스위치 */
   .view-toggle {
     display: inline-flex;
@@ -466,48 +425,7 @@ DELETE FROM users WHERE id = 1;</textarea>
     );
   }
 
-  /* SELECT 결과 표 (server.py 의 _result 텍스트) 를 HTML 로 꾸미기.
-   *
-   *   id | name           ← 첫 줄: 헤더 (강조)
-   *   1 | alice           ← 데이터
-   *   2 | bob
-   *   (2 rows)            ← 마지막 줄: 푸터 (회색)
-   */
-  function renderResultTable(rawText) {
-    if (!rawText) return '';
-    const lines = rawText.split('\n');
-    if (lines.length === 0) return '';
-
-    let header = '';
-    let footer = '';
-    let bodyLines = lines.slice();
-
-    // 첫 줄 = 헤더
-    if (bodyLines.length > 0) {
-      header = bodyLines.shift();
-    }
-    // 마지막 줄이 "(N rows)" 형태면 푸터
-    if (bodyLines.length > 0 && /^\(\d+ rows?\)$/.test(bodyLines[bodyLines.length - 1])) {
-      footer = bodyLines.pop();
-    }
-
-    let html = '<div class="stmt-result-wrap">' +
-                 '<div class="stmt-result-label">▼ 결과</div>' +
-                 '<div class="stmt-result-table">';
-    if (header) {
-      html += '<span class="result-header">' + esc(header) + '</span>';
-    }
-    if (bodyLines.length > 0) {
-      html += esc(bodyLines.join('\n'));
-    }
-    if (footer) {
-      html += '<span class="result-footer">' + esc(footer) + '</span>';
-    }
-    html += '</div></div>';
-    return html;
-  }
-
-  /* 카드 뷰: statement 마다 type/table 헤더 + 색칠된 JSON 본문 + 결과 표 */
+  /* 카드 뷰: statement 마다 type/table 헤더 + 색칠된 JSON 본문 */
   function renderCards(stmts) {
     if (!stmts || stmts.length === 0) {
       $cardsHost.innerHTML =
@@ -518,22 +436,15 @@ DELETE FROM users WHERE id = 1;</textarea>
     for (const s of stmts) {
       const type = s.type || (s.raw ? 'RAW' : 'UNKNOWN');
       const table = s.table || '';
-      // _result 는 JSON 본문에서 제외하고 결과 표로 별도 표시
-      const display = Object.assign({}, s);
-      const result = display._result;
-      delete display._result;
-
       const body = s.raw
         ? esc(s.raw)
-        : colorizeJson(JSON.stringify(display, null, 2));
-      const resultHtml = result ? renderResultTable(result) : '';
-
+        : colorizeJson(JSON.stringify(s, null, 2));
       html += '<div class="stmt-card">' +
                 '<div class="stmt-card-head">' +
                   '<span class="stmt-type-badge">' + esc(type) + '</span>' +
                   (table ? '<span class="stmt-table">' + esc(table) + '</span>' : '') +
                 '</div>' +
-                '<div class="stmt-card-body">' + body + resultHtml + '</div>' +
+                '<div class="stmt-card-body">' + body + '</div>' +
               '</div>';
     }
     $cardsHost.innerHTML = html;

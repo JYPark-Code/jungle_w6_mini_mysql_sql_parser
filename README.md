@@ -243,33 +243,21 @@ feature/<본인>  →  PR + CI green  →  PM 리뷰  →  dev  →  PR  →  ma
 
 - **`main` / `dev`** 는 브랜치 보호 (직접 push 차단, admin 만 우회)
 - 모든 PR 은 `.github/pull_request_template.md` 양식 자동 적용
-- 모든 PR 은 CI 자동 검증 + PM 코드 리뷰 후 머지
+- B vs C 경쟁 평가는 동일 양식 → 객관 비교
 
-## 석제 · 원우 PR 결과
+## B vs C 경쟁 평가 (실제 사례)
 
-두 분이 storage 영역을 나눠서 구현했고, 모두 인터페이스 계약을 지키며 성공적으로 머지됐습니다.
+INSERT/DELETE/UPDATE 구현은 두 명이 경쟁:
 
-### 석제 — SELECT 영역 (PR #18, #22)
+| 기준 | B (원우) | C (세인) |
+|---|---|---|
+| 빌드 무경고 | ✅ | ✅ |
+| 단위 테스트 수 | **48 개** | 0 개 |
+| INSERT/DELETE/UPDATE 구현 | ✅ 실구현 | stub |
+| NULL/에러 가드 | 145 곳 | — |
+| 인터페이스 계약 준수 | ✅ | — |
 
-| 항목 | 결과 |
-|---|---|
-| 담당 | `storage_select`, `storage_create`, CSV 파서, WHERE/LIKE/ORDER BY |
-| 단위 테스트 | 3 (executor 통합 테스트) |
-| 핵심 구현 | RFC 4180 호환 CSV 파서, LIKE 패턴 매칭 (`%`, `_`), 타입별 비교 |
-| 부가 작업 | `.gitattributes` LF 통일, 크로스 플랫폼 mkdir |
-| 인터페이스 계약 | ✅ types.h/parser.c/main.c 변경 0 |
-
-### 원우 — INSERT/DELETE/UPDATE 영역 (PR #23)
-
-| 항목 | 결과 |
-|---|---|
-| 담당 | `storage_insert`, `storage_delete`, `storage_update` + 헬퍼 |
-| 단위 테스트 | **48** (insert 10 + delete 18 + update 20) |
-| 핵심 구현 | 타입 검증, NULL 가드 145곳, CSV 이스케이프 |
-| 부가 작업 | Makefile 에 새 테스트 빌드 룰 통합 |
-| 인터페이스 계약 | ✅ types.h/parser.c/main.c/executor.c 변경 0 |
-
-두 PR 모두 GitHub Actions CI 자동 검증 + 코드 리뷰 + valgrind 누수 0 을 통과한 뒤 머지되었습니다.
+→ **B (원우) 채택**. 4-0 압승. 객관 데이터 기반 결정.
 
 ## 1주차 합산
 
@@ -280,7 +268,8 @@ feature/<본인>  →  PR + CI green  →  PM 리뷰  →  dev  →  PR  →  ma
 | C 소스 라인 | 약 5000 |
 | 단위 테스트 | 201 |
 | CI 실행 시간 | 평균 25초 |
-| Valgrind 누수 | 0 |
+| 충돌 발생 머지 | 1건 (PR #20 → #23 재작업) |
+| 작업 손실 사고 | 1건 (PR #21, 학습 사례) |
 
 ---
 
