@@ -1,4 +1,0 @@
-id,INT
-name,VARCHAR
-age,INT
-joined,DATE
