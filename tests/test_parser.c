@@ -164,6 +164,81 @@ static void test_ast_null_safe(void) {
     g_pass++;
 }
 
+/* ─── JSON 출력 (print_json) 테스트 ──────────────────────── */
+
+static char *capture_json(const char *sql_text) {
+    ParsedSQL *sql = parse_sql(sql_text);
+    char  *buf = NULL;
+    size_t len = 0;
+    FILE  *out = open_memstream(&buf, &len);
+    print_json(out, sql);
+    fclose(out);
+    free_parsed(sql);
+    return buf;
+}
+
+static void test_json_create(void) {
+    SECTION("JSON: CREATE");
+    char *s = capture_json("CREATE TABLE users (id INT, name VARCHAR)");
+    CHECK(strstr(s, "\"type\":\"CREATE\"")  != NULL, "type CREATE");
+    CHECK(strstr(s, "\"table\":\"users\"")  != NULL, "table users");
+    CHECK(strstr(s, "\"col_defs\":[\"id INT\",\"name VARCHAR\"]") != NULL, "col_defs array");
+    free(s);
+}
+
+static void test_json_select(void) {
+    SECTION("JSON: SELECT WHERE ORDER LIMIT");
+    char *s = capture_json(
+        "SELECT id, name FROM users WHERE age > 20 ORDER BY name DESC LIMIT 5");
+    CHECK(strstr(s, "\"type\":\"SELECT\"")            != NULL, "type SELECT");
+    CHECK(strstr(s, "\"columns\":[\"id\",\"name\"]") != NULL, "columns array");
+    CHECK(strstr(s, "\"column\":\"age\"")            != NULL, "where col");
+    CHECK(strstr(s, "\"op\":\">\"")                  != NULL, "where op");
+    CHECK(strstr(s, "\"value\":\"20\"")              != NULL, "where val");
+    CHECK(strstr(s, "\"order_by\":{\"column\":\"name\",\"asc\":false}") != NULL, "order_by DESC");
+    CHECK(strstr(s, "\"limit\":5")                   != NULL, "limit 5");
+    free(s);
+}
+
+static void test_json_insert(void) {
+    SECTION("JSON: INSERT");
+    char *s = capture_json("INSERT INTO t (a, b) VALUES (1, 'x')");
+    CHECK(strstr(s, "\"type\":\"INSERT\"")          != NULL, "type INSERT");
+    CHECK(strstr(s, "\"columns\":[\"a\",\"b\"]")    != NULL, "columns");
+    CHECK(strstr(s, "\"values\":[\"1\",\"x\"]")     != NULL, "values");
+    free(s);
+}
+
+static void test_json_where_and(void) {
+    SECTION("JSON: WHERE AND (2 conditions)");
+    char *s = capture_json("SELECT * FROM t WHERE a = 1 AND b = 2");
+    CHECK(strstr(s, "\"where_logic\":\"AND\"") != NULL, "where_logic AND");
+    int commas = 0;
+    for (char *p = s; *p; p++) if (*p == '{') commas++;
+    CHECK(commas >= 3, "outer + 2 where objects = 3 braces");  /* root + 2 conds */
+    free(s);
+}
+
+static void test_json_escape(void) {
+    SECTION("JSON: 문자열 이스케이프 (\" 와 \\)");
+    /* 파서가 " 따옴표 안 내용을 그대로 가져옴.
+     * 입력 'a\"b' 는 토크나이저가 ' 단위로 끊으므로 " 가 살아남음 → 이스케이프 검증 */
+    ParsedSQL *sql = parse_sql("INSERT INTO t (a) VALUES ('he\"llo')");
+    char *buf = NULL; size_t len = 0;
+    FILE *out = open_memstream(&buf, &len);
+    print_json(out, sql);
+    fclose(out);
+    CHECK(strstr(buf, "\\\"") != NULL, "\" escaped");
+    free_parsed(sql);
+    free(buf);
+}
+
+static void test_json_null_safe(void) {
+    SECTION("JSON: NULL safe");
+    print_json(NULL, NULL);
+    g_pass++;
+}
+
 int main(void) {
     test_create_table();
     test_create_all_types();
@@ -179,6 +254,13 @@ int main(void) {
     test_ast_select();
     test_ast_insert();
     test_ast_null_safe();
+
+    test_json_create();
+    test_json_select();
+    test_json_insert();
+    test_json_where_and();
+    test_json_escape();
+    test_json_null_safe();
 
     fprintf(stderr, "\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;

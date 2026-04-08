@@ -94,6 +94,9 @@ void       free_parsed(ParsedSQL *sql);
 /* ast_print.c — --debug 플래그용 AST 트리 시각화 */
 void       print_ast(FILE *out, const ParsedSQL *sql);
 
+/* json_out.c — --json 플래그용 JSON 직렬화 */
+void       print_json(FILE *out, const ParsedSQL *sql);
+
 /* executor.c */
 void       execute(ParsedSQL *sql);
 

@@ -26,18 +26,19 @@ static char *read_file(const char *path) {
     return buf;
 }
 
-/* 단일 statement 처리: 파싱 후 디버그 출력 + 실행 */
-static void process_stmt(const char *stmt, int debug_mode) {
+/* 단일 statement 처리: 파싱 → (debug/json 출력) → 실행 */
+static void process_stmt(const char *stmt, int debug_mode, int json_mode) {
     ParsedSQL *sql = parse_sql(stmt);
     if (sql && sql->type != QUERY_UNKNOWN) {
         if (debug_mode) print_ast(stdout, sql);
+        if (json_mode)  print_json(stdout, sql);
         execute(sql);
     }
     free_parsed(sql);
 }
 
 /* 세미콜론 단위 split. 따옴표 안의 ; 는 무시 */
-static void run_statements(const char *src, int debug_mode) {
+static void run_statements(const char *src, int debug_mode, int json_mode) {
     const char *p = src;
     const char *start = p;
     char quote = 0;
@@ -52,7 +53,7 @@ static void run_statements(const char *src, int debug_mode) {
             char *stmt = malloc(len + 1);
             memcpy(stmt, start, len);
             stmt[len] = '\0';
-            process_stmt(stmt, debug_mode);
+            process_stmt(stmt, debug_mode, json_mode);
             free(stmt);
             start = p + 1;
         }
@@ -61,7 +62,7 @@ static void run_statements(const char *src, int debug_mode) {
 
     /* 끝에 ; 없는 마지막 statement */
     while (*start && (*start == ' ' || *start == '\n' || *start == '\t' || *start == '\r')) start++;
-    if (*start) process_stmt(start, debug_mode);
+    if (*start) process_stmt(start, debug_mode, json_mode);
 }
 
 int main(int argc, char **argv) {
@@ -76,12 +77,10 @@ int main(int argc, char **argv) {
         if (strcmp(argv[i], "--json")  == 0) json_mode  = 1;
         if (strcmp(argv[i], "--debug") == 0) debug_mode = 1;
     }
-    (void)json_mode;
-
     char *src = read_file(argv[1]);
     if (!src) return 1;
 
-    run_statements(src, debug_mode);
+    run_statements(src, debug_mode, json_mode);
 
     free(src);
     return 0;
