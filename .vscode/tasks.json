@@ -1,4 +1,4 @@
-{
+﻿{
     "version": "2.0.0",
     "tasks": [
         {
@@ -7,6 +7,7 @@
             "command": "/usr/bin/gcc",
             "args": [
                 "-g",
+                "-I${workspaceFolder}/include",
                 "${file}",
                 "-o",
                 "${fileDirname}/${fileBasenameNoExtension}"
@@ -21,7 +22,7 @@
                 "kind": "build",
                 "isDefault": true
             },
-            "detail": "컴파일러: /usr/bin/gcc"
+            "detail": "compiler: /usr/bin/gcc"
         }
     ]
 }

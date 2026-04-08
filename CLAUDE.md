@@ -22,7 +22,7 @@
 - 지원 타입: INT, VARCHAR, FLOAT, BOOLEAN, DATE, DATETIME
 - DATE: 'YYYY-MM-DD' 문자열 비교로 처리 (별도 구조체 없음)
 - DATETIME: 1주차에는 파싱만 받고, 실제 비교/저장 구현은 **2주차로 이관**
-- 정의 위치: include/type.h 의 `ColumnType` enum, `ColDef` 구조체
+- 정의 위치: include/types.h 의 `ColumnType` enum, `ColDef` 구조체
 
 ---
 

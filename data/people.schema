@@ -1,0 +1,3 @@
+id INT
+name VARCHAR
+age INT
