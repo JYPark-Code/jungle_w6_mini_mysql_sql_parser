@@ -3,7 +3,7 @@
  * 가벼운 자체 assert 기반. 실패하면 비정상 종료.
  */
 
-#define _POSIX_C_SOURCE 200809L
+#define _GNU_SOURCE
 
 #include "types.h"
 #include <stdio.h>
@@ -114,6 +114,56 @@ static void test_free_null(void) {
     g_pass++;
 }
 
+/* ─── AST 출력 (print_ast) 테스트 ─────────────────────────── */
+
+static char *capture_ast(const char *sql_text) {
+    ParsedSQL *sql = parse_sql(sql_text);
+    char  *buf = NULL;
+    size_t len = 0;
+    FILE  *out = open_memstream(&buf, &len);
+    print_ast(out, sql);
+    fclose(out);
+    free_parsed(sql);
+    return buf;
+}
+
+static void test_ast_create(void) {
+    SECTION("AST: CREATE");
+    char *s = capture_ast("CREATE TABLE users (id INT, name VARCHAR)");
+    CHECK(strstr(s, "type:  CREATE") != NULL, "type CREATE");
+    CHECK(strstr(s, "table: users")  != NULL, "table users");
+    CHECK(strstr(s, "id INT")        != NULL, "col id INT");
+    CHECK(strstr(s, "name VARCHAR")  != NULL, "col name VARCHAR");
+    free(s);
+}
+
+static void test_ast_select(void) {
+    SECTION("AST: SELECT WHERE ORDER LIMIT");
+    char *s = capture_ast(
+        "SELECT id, name FROM users WHERE age > 20 ORDER BY name DESC LIMIT 5");
+    CHECK(strstr(s, "type:  SELECT")        != NULL, "type SELECT");
+    CHECK(strstr(s, "columns (2)")          != NULL, "2 columns");
+    CHECK(strstr(s, "age > 20")             != NULL, "where rendered");
+    CHECK(strstr(s, "order_by: name DESC")  != NULL, "order_by DESC");
+    CHECK(strstr(s, "limit: 5")             != NULL, "limit 5");
+    free(s);
+}
+
+static void test_ast_insert(void) {
+    SECTION("AST: INSERT");
+    char *s = capture_ast("INSERT INTO t (a, b) VALUES (1, 'x')");
+    CHECK(strstr(s, "type:  INSERT") != NULL, "type INSERT");
+    CHECK(strstr(s, "values (2)")    != NULL, "2 values");
+    CHECK(strstr(s, "• x")           != NULL, "value x");
+    free(s);
+}
+
+static void test_ast_null_safe(void) {
+    SECTION("AST: NULL safe");
+    print_ast(NULL, NULL);   /* must not crash */
+    g_pass++;
+}
+
 int main(void) {
     test_create_table();
     test_create_all_types();
@@ -124,6 +174,11 @@ int main(void) {
     test_delete();
     test_update();
     test_free_null();
+
+    test_ast_create();
+    test_ast_select();
+    test_ast_insert();
+    test_ast_null_safe();
 
     fprintf(stderr, "\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;
