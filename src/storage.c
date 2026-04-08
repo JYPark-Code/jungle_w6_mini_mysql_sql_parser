@@ -13,12 +13,31 @@
 #else
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <unistd.h>
 #define MKDIR(path) mkdir(path, 0775)
 #define STAT_STRUCT struct stat
 #define STAT_FUNC stat
 #endif
 
 #include "types.h"
+
+/* ANSI 컬러 매크로 (세인 PR #31 일부 채택).
+ * print_rowset 의 헤더 행에만 색을 입혀 SELECT 결과 표를 강조한다.
+ * file_is_tty() 가 0 (메모리 스트림 / 리다이렉트) 이면 빈 문자열 fallback
+ * → 단위 테스트의 fixture 검증 깨지지 않음. */
+#define TABLE_HEADER_COLOR "\x1b[1;92m"   /* 밝은 녹색 굵게 */
+#define TABLE_COLOR_RESET  "\x1b[0m"
+
+static int storage_file_is_tty(FILE *fp) {
+    if (fp == NULL) return 0;
+#ifdef _WIN32
+    return 0;  /* Windows 는 일단 색 OFF */
+#else
+    int fd = fileno(fp);
+    if (fd < 0) return 0;
+    return isatty(fd);
+#endif
+}
 
 #define STORAGE_PATH_MAX 512
 #define STORAGE_LINE_MAX 512
@@ -2567,10 +2586,19 @@ void print_rowset(FILE *out, const RowSet *rs)
 
     if (out == NULL || rs == NULL) return;
 
+    /* TTY 면 헤더에 색, 메모리 스트림이면 색 없음 (테스트 안전) */
+    int use_color = storage_file_is_tty(out);
+
     /* 헤더 */
     for (j = 0; j < rs->col_count; j++) {
         if (j > 0) fprintf(out, " | ");
-        fprintf(out, "%s", rs->col_names[j] ? rs->col_names[j] : "");
+        if (use_color) {
+            fprintf(out, "%s%s%s", TABLE_HEADER_COLOR,
+                    rs->col_names[j] ? rs->col_names[j] : "",
+                    TABLE_COLOR_RESET);
+        } else {
+            fprintf(out, "%s", rs->col_names[j] ? rs->col_names[j] : "");
+        }
     }
     fprintf(out, "\n");
 
