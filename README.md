@@ -342,6 +342,156 @@ UPDATE users SET city = 'Jeju' WHERE age > 30 AND name = 'bob';
 
 ---
 
+## 🎤 발표 포인트 — N-ary WHERE 리팩토링 Before / After
+
+후속 리팩토링에서 가장 임팩트가 컸던 변화를 코드 레벨로 펼쳐본다.
+**1주차의 가장 큰 약점:** WHERE 가 최대 2 조건까지밖에 못 받았다.
+
+### 1. 같은 의도, 다른 결과 — 쿼리로 보기
+
+```sql
+-- ❌ 1주차 (최대 2 조건만 — 3번째부터 무시되거나 파싱 실패)
+SELECT * FROM users WHERE age > 24 AND city = 'Seoul';
+
+-- ✅ 후속 리팩토링 (N개 조건, AND/OR 자유 혼합)
+SELECT * FROM users WHERE age > 24 AND city = 'Seoul' AND age < 32 OR name = 'bob';
+```
+
+### 2. 왜 2개까지밖에 안 됐는가 — 1주차 코드
+
+`ParsedSQL` 안에 결합자가 **고정 길이 문자열 한 칸** 이었고,
+`parse_where` 가 아예 **2칸짜리 배열을 미리 잡아놓고 for(i<2) 하드코딩** 으로 돌고 있었다.
+
+```c
+/* 리팩토링 전 — include/types.h (ParsedSQL 일부) */
+WhereClause *where;
+int          where_count;    /* 0~2 */
+char         where_logic[8]; /* "AND" 또는 "OR" — 단 하나만 */
+
+/* 리팩토링 전 — src/parser.c parse_where */
+static void parse_where(TokenList *t, ParsedSQL *sql) {
+    sql->where = calloc(2, sizeof(WhereClause));   /* 최대 2칸 미리 잡기 */
+    sql->where_count = 0;
+
+    for (int i = 0; i < 2; i++) {                  /* 하드코딩된 2회 루프 */
+        const char *col = advance(t);
+        const char *op  = advance(t);
+        /* ... */
+    }
+}
+
+/* 리팩토링 전 — DELETE/UPDATE 가드도 "0 또는 1 조건" 만 통과 */
+if (where_count == 0) {
+    return 0;
+}
+if (where_count != 1 || where == NULL) {
+    return -1;
+}
+```
+
+핵심 한계 3가지:
+- `where_logic[8]` — **결합자가 한 개만** → `A AND B AND C` 의 두 결합자를 표현 못 함
+- `calloc(2, ...)` + `for(i<2)` — **2칸 하드코딩** → 3번째 조건을 받을 칸이 없음
+- DML 가드가 `where_count != 1` — **DELETE/UPDATE 는 단일 조건만 허용**
+
+### 3. 어떻게 풀었는가 — 이중 포인터 + N-1 결합자 배열
+
+```c
+/* 리팩토링 후 — include/types.h (ParsedSQL 일부) */
+WhereClause *where;
+int          where_count;
+char       **where_links;   /* ⭐ 이중 포인터 — N-1 개 결합자 ("AND"/"OR") */
+```
+
+핵심 아이디어:
+- `where` 는 그대로 N개 동적 확장 가능한 배열
+- `where_links` 는 **`char **`** — 결합자를 N-1개 저장하는 가변 길이 문자열 배열
+- N개 조건 사이에 N-1개 결합자가 들어간다 (`A [link0] B [link1] C [link2] D ...`)
+- 1주차 호환을 위해 `where_logic[8]` 도 일단 fallback 으로 유지 → **회귀 0**
+
+```c
+/* 리팩토링 후 — src/parser.c parse_where (개념 발췌) */
+static void parse_where(TokenList *t, ParsedSQL *sql) {
+    sql->where       = NULL;
+    sql->where_links = NULL;
+    sql->where_count = 0;
+
+    while (!at_stop(t)) {                           /* 하드코딩 2회 → N회 */
+        sql->where = realloc(sql->where,
+                             sizeof(WhereClause) * (sql->where_count + 1));
+        /* ... col / op / value 파싱 ... */
+        sql->where_count++;
+
+        const char *link = peek(t);
+        if (eq_ci(link, "AND") || eq_ci(link, "OR")) {
+            sql->where_links = realloc(sql->where_links,
+                                       sizeof(char*) * sql->where_count);
+            sql->where_links[sql->where_count - 1] = strdup(advance(t));
+        } else {
+            break;
+        }
+    }
+}
+
+/* 리팩토링 후 — DELETE/UPDATE 가드는 "조건 수 제한" 자체가 사라짐 */
+if (where_count == 0) {
+    return 0;          /* 전체 매칭은 그대로 */
+}
+/* where_count != 1 가드 삭제 — N개 조건 모두 평가 */
+```
+
+### 4. 시그니처 통일 — 부수적이지만 본질적
+
+N-ary WHERE 의 결합자 배열을 DELETE/UPDATE 본문까지 흘려주려면
+`WhereClause *` + `int` 두 인자만으로는 부족했다. SELECT 와 동일한 패턴으로 통일.
+
+```c
+/* Before — 1주차 */
+int storage_delete(const char *table, WhereClause *where, int where_count);
+int storage_update(const char *table, SetClause *set, int set_count,
+                   WhereClause *where, int where_count);
+
+/* After — 후속 리팩토링 */
+int storage_delete(const char *table, ParsedSQL *sql);
+int storage_update(const char *table, ParsedSQL *sql);
+```
+
+호출부 (`executor.c`) 도 한 줄씩만 갱신:
+
+```c
+/* Before */
+storage_delete(sql->table, sql->where, sql->where_count);
+
+/* After */
+storage_delete(sql->table, sql);
+```
+
+### 5. 결과
+
+| 항목 | 1주차 | 후속 리팩토링 후 |
+|---|---|---|
+| WHERE 조건 수 | 최대 **2** | **N개** (배열 동적 확장) |
+| 결합자 표현 | `char where_logic[8]` (1개) | `char **where_links` (N-1개) |
+| DML 가드 | `where_count != 1` 차단 | 제한 없음 — N개 평가 |
+| `storage_delete/update` 시그니처 | 4-5 인자 | `ParsedSQL*` 한 인자 |
+| 단위 테스트 | 201 | **227** (+30 N-ary/RowSet/집계) |
+
+### 6. 관련 PR — 점수 + 책임 소재
+
+PR 은 단순한 코드 묶음이 아니라 **누가 / 어디까지 / 왜** 를 동시에 기록한다.
+이 리팩토링과 그 기반이 된 1주차 SELECT 영역을 같이 보면 책임 소재가 한눈에 잡힌다.
+
+| PR | 담당 | 단계 | 점수 / 핵심 |
+|---|---|---|---|
+| [JYPark-Code/jungle_w6_mini_mysql_sql_parser#18](https://github.com/JYPark-Code/jungle_w6_mini_mysql_sql_parser/pull/18) | 석제 | 1주차 | **A** — SELECT 영역 1차 완성 (`storage_select` / `storage_create` / CSV 파서 / WHERE / LIKE / ORDER BY). 인터페이스 계약 위반 0, 후속 N-ary 평가의 토대 |
+| [JYPark-Code/jungle_w6_mini_mysql_sql_parser#32](https://github.com/JYPark-Code/jungle_w6_mini_mysql_sql_parser/pull/32) | 원우 | 후속 | **A** — UPDATE/DELETE 시그니처 통일 + N-ary WHERE 평가 (`json_out` / `sql_format` 채택) |
+| [JYPark-Code/jungle_w6_mini_mysql_sql_parser#33](https://github.com/JYPark-Code/jungle_w6_mini_mysql_sql_parser/pull/33) | 석제 | 후속 | **A** — Parser stop set + N-ary `parse_where` (`parse_where` / `parse_select` / `ast_print` 채택) |
+
+PR #32 와 #33 의 충돌 함수는 옆으로 비교 → **함수마다 더 나은 쪽** 을 골라 통합 ([아래 옵션 B 사례](#후속-리팩토링--옵션-b-mixed-merge-사례-) 참고).
+PR #18 은 1주차 SELECT 의 책임 소재가 석제임을 영구히 기록 — 후속 단계에서 같은 영역을 N-ary 로 확장할 때도 누구에게 리뷰를 청할지 자명했다.
+
+---
+
 # 🤝 협업 모델
 
 이 1주차 결과물은 4명이 **각자 영역을 격리한 상태에서 병렬 개발** 하고,
