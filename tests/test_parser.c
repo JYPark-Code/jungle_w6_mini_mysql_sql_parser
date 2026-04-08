@@ -140,6 +140,29 @@ static void test_update(void) {
     free_parsed(s);
 }
 
+static void test_delete_mixed_where(void) {
+    SECTION("DELETE mixed WHERE");
+    ParsedSQL *s = parse_sql("DELETE FROM users WHERE a = 1 AND b = 2 OR c = 3");
+    CHECK(s->type == QUERY_DELETE, "type");
+    CHECK(s->where_count == 3, "where_count");
+    CHECK(s->where_links != NULL, "where_links");
+    CHECK(strcmp(s->where_links[0], "AND") == 0, "first link");
+    CHECK(strcmp(s->where_links[1], "OR") == 0, "second link");
+    free_parsed(s);
+}
+
+static void test_update_mixed_where(void) {
+    SECTION("UPDATE mixed WHERE");
+    ParsedSQL *s = parse_sql("UPDATE users SET age = 30 WHERE a = 1 OR b = 2 AND c = 3");
+    CHECK(s->type == QUERY_UPDATE, "type");
+    CHECK(s->set_count == 1, "set_count");
+    CHECK(s->where_count == 3, "where_count");
+    CHECK(s->where_links != NULL, "where_links");
+    CHECK(strcmp(s->where_links[0], "OR") == 0, "first link");
+    CHECK(strcmp(s->where_links[1], "AND") == 0, "second link");
+    free_parsed(s);
+}
+
 static void test_free_null(void) {
     SECTION("free_parsed(NULL)");
     free_parsed(NULL);    /* must not crash */
@@ -288,6 +311,17 @@ static void test_select_or_where(void) {
     free_parsed(s);
 }
 
+static void test_where_mixed_links(void) {
+    SECTION("WHERE mixed AND/OR links");
+    ParsedSQL *s = parse_sql("SELECT * FROM users WHERE a = 1 AND b = 2 OR c = 3");
+    CHECK(s->where_count == 3, "where_count == 3");
+    CHECK(s->where_links != NULL, "where_links allocated");
+    CHECK(strcmp(s->where_links[0], "AND") == 0, "first link AND");
+    CHECK(strcmp(s->where_links[1], "OR") == 0, "second link OR");
+    CHECK(s->where_logic[0] == '\0', "mixed links clear fallback logic");
+    free_parsed(s);
+}
+
 static void test_order_by_asc_explicit(void) {
     SECTION("ORDER BY ... ASC (명시)");
     ParsedSQL *s = parse_sql("SELECT * FROM users ORDER BY name ASC");
@@ -350,7 +384,8 @@ static void test_ast_select(void) {
     free(s);
 }
 
-/* AST 출력이 혼합 AND/OR 링크를 조건 순서대로 보여주는지 확인한다. */
+/* AST 출력이 혼합 AND/OR 링크를 조건 순서대로 보여주는지 확인한다.
+ * (석제 ast_print 채택 — 각 조건 옆에 결합자 inline) */
 static void test_ast_where_mixed_links(void) {
     SECTION("AST: WHERE mixed links");
     char *s = capture_ast(
@@ -549,19 +584,18 @@ static void test_json_where_and(void) {
     SECTION("JSON: WHERE AND (2 conditions)");
     char *s = capture_json("SELECT * FROM t WHERE a = 1 AND b = 2");
     CHECK(strstr(s, "\"where_links\":[\"AND\"]") != NULL, "where_links AND");
-    CHECK(strstr(s, "\"where_logic\":\"AND\"") != NULL, "where_logic AND");
+    /* json_out: 원우 채택 (else if) — where_links 와 where_logic 둘 중 하나만 출력 */
     int commas = 0;
     for (char *p = s; *p; p++) if (*p == '{') commas++;
     CHECK(commas >= 3, "outer + 2 where objects = 3 braces");  /* root + 2 conds */
     free(s);
 }
 
-/* JSON 출력이 where_links 배열로 혼합 결합자를 잃지 않는지 확인한다. */
-static void test_json_where_mixed_links(void) {
+static void test_json_where_links(void) {
     SECTION("JSON: WHERE mixed links");
     char *s = capture_json("SELECT * FROM t WHERE a = 1 AND b = 2 OR c = 3");
-    CHECK(strstr(s, "\"where_links\":[\"AND\",\"OR\"]") != NULL, "where_links AND/OR");
-    CHECK(strstr(s, "\"where_logic\"") == NULL, "mixed case omits deprecated where_logic");
+    CHECK(strstr(s, "\"where_links\":[\"AND\",\"OR\"]") != NULL, "where_links array");
+    CHECK(strstr(s, "\"where_logic\"") == NULL, "mixed links skip fallback logic");
     free(s);
 }
 
@@ -651,6 +685,13 @@ static void test_format_update(void) {
     free(s);
 }
 
+static void test_format_mixed_where(void) {
+    SECTION("FORMAT: mixed WHERE links");
+    char *s = capture_format("select * from t where a = 1 and b = 2 or c = 3");
+    CHECK(strstr(s, "WHERE a = 1 AND b = 2 OR c = 3") != NULL, "mixed WHERE preserved");
+    free(s);
+}
+
 static void test_format_round_trip(void) {
     SECTION("FORMAT: round-trip (parse → format → parse 결과 동일)");
     const char *original = "SELECT id FROM t WHERE x > 10";
@@ -681,6 +722,8 @@ int main(void) {
     test_where_nary_mixed_logic();
     test_delete();
     test_update();
+    test_delete_mixed_where();
+    test_update_mixed_where();
     test_free_null();
     test_select_count_star();
     test_select_count_star_spaced();
@@ -696,6 +739,7 @@ int main(void) {
     test_where_operators();
     test_trailing_whitespace();
     test_select_or_where();
+    test_where_mixed_links();
     test_order_by_asc_explicit();
     test_sql_line_comment();
 
@@ -722,7 +766,7 @@ int main(void) {
     test_json_select();
     test_json_insert();
     test_json_where_and();
-    test_json_where_mixed_links();
+    test_json_where_links();
     test_json_escape();
     test_json_null_safe();
 
@@ -732,6 +776,7 @@ int main(void) {
     test_format_where_mixed_links();
     test_format_delete();
     test_format_update();
+    test_format_mixed_where();
     test_format_round_trip();
     test_format_null_safe();
 

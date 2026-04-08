@@ -31,6 +31,9 @@ static int read_text_file(const char *path, char *buffer, size_t size);
 static int prepare_table(const char *table, const char *schema_content, const char *table_content);
 static WhereClause make_where(const char *column, const char *op, const char *value);
 static SetClause make_set(const char *column, const char *value);
+static int call_storage_update(const char *table, SetClause *set, int set_count,
+                               WhereClause *where, int where_count,
+                               char **where_links, const char *where_logic);
 
 static int test_update_all_rows_success(void);
 static int test_update_single_where_success(void);
@@ -43,7 +46,10 @@ static int test_update_datetime_string_success(void);
 static int test_update_zero_match_success(void);
 static int test_update_missing_schema_fails(void);
 static int test_update_missing_table_fails(void);
-static int test_update_multiple_where_rejected(void);
+static int test_update_multiple_where_and_success(void);
+static int test_update_multiple_where_or_success(void);
+static int test_update_multiple_where_mixed_success(void);
+static int test_update_multiple_where_fallback_success(void);
 static int test_update_unknown_column_fails(void);
 static int test_update_duplicate_set_column_fails(void);
 static int test_update_int_type_mismatch_fails(void);
@@ -83,7 +89,10 @@ int main(void)
         {"update zero match success", test_update_zero_match_success},
         {"update missing schema fails", test_update_missing_schema_fails},
         {"update missing table fails", test_update_missing_table_fails},
-        {"update multiple where rejected", test_update_multiple_where_rejected},
+        {"update multiple where AND success", test_update_multiple_where_and_success},
+        {"update multiple where OR success", test_update_multiple_where_or_success},
+        {"update multiple where mixed success", test_update_multiple_where_mixed_success},
+        {"update multiple where fallback success", test_update_multiple_where_fallback_success},
         {"update unknown column fails", test_update_unknown_column_fails},
         {"update duplicate set column fails", test_update_duplicate_set_column_fails},
         {"update int type mismatch fails", test_update_int_type_mismatch_fails},
@@ -300,6 +309,31 @@ static SetClause make_set(const char *column, const char *value)
 
     return set;
 }
+
+static int call_storage_update(const char *table, SetClause *set, int set_count,
+                               WhereClause *where, int where_count,
+                               char **where_links, const char *where_logic)
+{
+    ParsedSQL sql;
+
+    memset(&sql, 0, sizeof(sql));
+    if (table != NULL) {
+        snprintf(sql.table, sizeof(sql.table), "%s", table);
+    }
+    sql.set = set;
+    sql.set_count = set_count;
+    sql.where = where;
+    sql.where_count = where_count;
+    sql.where_links = where_links;
+    if (where_logic != NULL) {
+        snprintf(sql.where_logic, sizeof(sql.where_logic), "%s", where_logic);
+    }
+
+    return storage_update(table, &sql);
+}
+
+#define storage_update(table, set, set_count, where, where_count) \
+    call_storage_update((table), (set), (set_count), (where), (where_count), NULL, NULL)
 
 static int test_update_all_rows_success(void)
 {
@@ -519,18 +553,101 @@ cleanup:
     return status;
 }
 
-static int test_update_multiple_where_rejected(void)
+static int test_update_multiple_where_and_success(void)
 {
-    SetClause set[] = {make_set("age", "22")};
+    SetClause set[] = {make_set("age", "55")};
     WhereClause where[] = {
-        make_where("id", "=", "1"),
-        make_where("age", ">", "10")
+        make_where("id", ">=", "2"),
+        make_where("age", ">=", "30"),
+        make_where("name", "!=", "park")
     };
+    char *where_links[] = {"AND", "AND"};
+    char buffer[BUFFER_SIZE];
     int status = 1;
 
     reset_test_environment();
-    ASSERT_TRUE(prepare_table("users", "id,INT\nage,INT\n", "1,20\n") == 0);
-    ASSERT_TRUE(storage_update("users", set, 1, where, 2) == -1);
+    ASSERT_TRUE(prepare_table("users",
+                              "id,INT\nname,VARCHAR\nage,INT\n",
+                              "1,kim,20\n2,lee,31\n3,park,28\n4,choi,34\n") == 0);
+    ASSERT_TRUE(call_storage_update("users", set, 1, where, 3, where_links, NULL) == 0);
+    ASSERT_TRUE(read_text_file("data/tables/users.csv", buffer, sizeof(buffer)) == 0);
+    ASSERT_TRUE(strcmp(buffer, "1,kim,20\n2,lee,55\n3,park,28\n4,choi,55\n") == 0);
+    status = 0;
+
+cleanup:
+    reset_test_environment();
+    return status;
+}
+
+static int test_update_multiple_where_or_success(void)
+{
+    SetClause set[] = {make_set("age", "11")};
+    WhereClause where[] = {
+        make_where("id", "=", "1"),
+        make_where("name", "=", "park"),
+        make_where("age", ">", "40")
+    };
+    char *where_links[] = {"OR", "OR"};
+    char buffer[BUFFER_SIZE];
+    int status = 1;
+
+    reset_test_environment();
+    ASSERT_TRUE(prepare_table("users",
+                              "id,INT\nname,VARCHAR\nage,INT\n",
+                              "1,kim,20\n2,lee,31\n3,park,28\n4,choi,34\n") == 0);
+    ASSERT_TRUE(call_storage_update("users", set, 1, where, 3, where_links, NULL) == 0);
+    ASSERT_TRUE(read_text_file("data/tables/users.csv", buffer, sizeof(buffer)) == 0);
+    ASSERT_TRUE(strcmp(buffer, "1,kim,11\n2,lee,31\n3,park,11\n4,choi,34\n") == 0);
+    status = 0;
+
+cleanup:
+    reset_test_environment();
+    return status;
+}
+
+static int test_update_multiple_where_mixed_success(void)
+{
+    SetClause set[] = {make_set("age", "77")};
+    WhereClause where[] = {
+        make_where("name", "=", "kim"),
+        make_where("name", "=", "lee"),
+        make_where("age", ">=", "30")
+    };
+    char *where_links[] = {"OR", "AND"};
+    char buffer[BUFFER_SIZE];
+    int status = 1;
+
+    reset_test_environment();
+    ASSERT_TRUE(prepare_table("users",
+                              "id,INT\nname,VARCHAR\nage,INT\n",
+                              "1,kim,20\n2,lee,31\n3,park,28\n4,choi,34\n") == 0);
+    ASSERT_TRUE(call_storage_update("users", set, 1, where, 3, where_links, NULL) == 0);
+    ASSERT_TRUE(read_text_file("data/tables/users.csv", buffer, sizeof(buffer)) == 0);
+    ASSERT_TRUE(strcmp(buffer, "1,kim,77\n2,lee,77\n3,park,28\n4,choi,34\n") == 0);
+    status = 0;
+
+cleanup:
+    reset_test_environment();
+    return status;
+}
+
+static int test_update_multiple_where_fallback_success(void)
+{
+    SetClause set[] = {make_set("age", "88")};
+    WhereClause where[] = {
+        make_where("age", ">=", "30"),
+        make_where("name", "=", "park")
+    };
+    char buffer[BUFFER_SIZE];
+    int status = 1;
+
+    reset_test_environment();
+    ASSERT_TRUE(prepare_table("users",
+                              "id,INT\nname,VARCHAR\nage,INT\n",
+                              "1,kim,20\n2,lee,31\n3,park,28\n4,choi,34\n") == 0);
+    ASSERT_TRUE(call_storage_update("users", set, 1, where, 2, NULL, "OR") == 0);
+    ASSERT_TRUE(read_text_file("data/tables/users.csv", buffer, sizeof(buffer)) == 0);
+    ASSERT_TRUE(strcmp(buffer, "1,kim,20\n2,lee,88\n3,park,88\n4,choi,88\n") == 0);
     status = 0;
 
 cleanup:

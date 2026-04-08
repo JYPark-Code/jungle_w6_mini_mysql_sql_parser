@@ -47,16 +47,19 @@ static void emit_value(FILE *out, const char *v) {
     else                fprintf(out, "%s",   v);
 }
 
-/* condition_index 번째 WHERE 조건 앞에 붙는 결합자.
- * Phase 1 에서는 where_links 를 우선 쓰고, 1주차 호환을 위해 where_logic 으로
- * fallback 한다. */
-static const char *where_link_at(const ParsedSQL *sql, int condition_index) {
-    if (!sql || condition_index <= 0) return NULL;
-    if (sql->where_links && sql->where_links[condition_index - 1]) {
-        return sql->where_links[condition_index - 1];
-    }
-    if (sql->where_logic[0]) return sql->where_logic;
-    return NULL;
+static const char *where_link_at(const ParsedSQL *sql, int index) {
+    const char *link;
+
+    if (sql == NULL || index < 0) return "";
+    if (sql->where_links != NULL) link = sql->where_links[index];
+    else if (sql->where_logic[0]) link = sql->where_logic;
+    else link = "AND";
+
+    if (link != NULL &&
+        (link[0] == 'O' || link[0] == 'o') &&
+        (link[1] == 'R' || link[1] == 'r') &&
+        link[2] == '\0') return "OR";
+    return "AND";
 }
 
 /* emit_where: WHERE 절을 출력. WHERE 가 없으면 아무것도 안 함.
@@ -65,10 +68,7 @@ static void emit_where(FILE *out, const ParsedSQL *sql) {
     if (sql->where_count == 0) return;
     fprintf(out, " WHERE ");
     for (int i = 0; i < sql->where_count; i++) {
-        if (i > 0) {
-            const char *link = where_link_at(sql, i);
-            if (link) fprintf(out, " %s ", link);
-        }
+        if (i > 0) fprintf(out, " %s ", where_link_at(sql, i - 1));
         fprintf(out, "%s %s ", sql->where[i].column, sql->where[i].op);
         emit_value(out, sql->where[i].value);
     }

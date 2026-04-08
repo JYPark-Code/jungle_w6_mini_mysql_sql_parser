@@ -32,9 +32,8 @@ typedef struct {
 } StorageRowBuffer;
 
 static int validate_insert_input(const char *table, char **values, int count);
-static int validate_delete_input(const char *table, WhereClause *where, int where_count);
-static int validate_update_input(const char *table, SetClause *set, int set_count,
-                                 WhereClause *where, int where_count);
+static int validate_delete_input(const char *table, const ParsedSQL *sql);
+static int validate_update_input(const char *table, const ParsedSQL *sql);
 static int build_schema_path(const char *table, char *out, size_t size);
 static int build_table_path(const char *table, char *out, size_t size);
 static int build_temp_path(const char *table, char *out, size_t size);
@@ -47,29 +46,24 @@ static int append_csv_row(const char *table_path, char **row, int row_count);
 static int write_csv_row(FILE *fp, char **row, int row_count);
 static int write_csv_field(FILE *fp, const char *value);
 static int validate_delete_clause(const ColDef *schema, int schema_count,
-                                  WhereClause *where, int where_count,
-                                  int *out_where_index);
+                                  const ParsedSQL *sql);
 static int validate_update_set_clause(const ColDef *schema, int schema_count,
                                       SetClause *set, int set_count,
                                       int **out_set_indexes);
 static int delete_rows_from_table(const char *table_path, const char *temp_path,
                                   const ColDef *schema, int schema_count,
-                                  WhereClause *where, int where_count,
-                                  int where_index);
+                                  const ParsedSQL *sql);
 static int update_rows_from_table(const char *table_path, const char *temp_path,
                                   const ColDef *schema, int schema_count,
-                                  SetClause *set, int set_count,
-                                  const int *set_indexes,
-                                  WhereClause *where, int where_count,
-                                  int where_index);
+                                  const ParsedSQL *sql, const int *set_indexes);
 static int read_csv_record(FILE *fp, char **out_record);
 static int parse_csv_record(const char *record, char ***out_fields, int *out_count);
 static int append_char(char **buffer, size_t *len, size_t *cap, char ch);
 static int push_field(char ***fields, int *field_count,
                       char **field_buffer, size_t *field_len, size_t *field_cap);
-static int row_matches_delete(const ColDef *schema, char **row, int row_count,
-                              WhereClause *where, int where_count,
-                              int where_index, int *out_match);
+static int row_matches_delete(const ColDef *schema, int schema_count,
+                              char **row, int row_count,
+                              const ParsedSQL *sql, int *out_match);
 static int apply_update_to_row(char **row, int row_count,
                                SetClause *set, int set_count,
                                const int *set_indexes);
@@ -106,6 +100,7 @@ static int append_row_buffer(StorageRowBuffer *buffer, char **row);
 static int evaluate_select_clause(const ColDef *schema, int schema_count,
                                   char **row, int row_count,
                                   const WhereClause *clause, int *matched);
+static const char *resolve_where_link(const ParsedSQL *sql, int index);
 static int row_matches_select(const ParsedSQL *sql, const ColDef *schema, int schema_count,
                               char **row, int row_count, int *matched);
 static int collect_matching_rows(const ParsedSQL *sql, const ColDef *schema, int schema_count,
@@ -179,17 +174,16 @@ cleanup:
 /* 입력: 테이블 이름, optional WHERE 배열, WHERE 개수
  * 동작: schema와 WHERE를 검증한 뒤 조건에 맞는 row를 제외하고 테이블 파일 전체를 재작성
  * 반환: 성공 0, 실패 -1 */
-int storage_delete(const char *table, WhereClause *where, int where_count)
+int storage_delete(const char *table, ParsedSQL *sql)
 {
     char schema_path[STORAGE_PATH_MAX];
     char table_path[STORAGE_PATH_MAX];
     char temp_path[STORAGE_PATH_MAX];
     ColDef *schema = NULL;
     int schema_count = 0;
-    int where_index = -1;
     int status = -1;
 
-    if (validate_delete_input(table, where, where_count) != 0) {
+    if (validate_delete_input(table, sql) != 0) {
         return -1;
     }
 
@@ -209,12 +203,12 @@ int storage_delete(const char *table, WhereClause *where, int where_count)
         return -1;
     }
 
-    if (validate_delete_clause(schema, schema_count, where, where_count, &where_index) != 0) {
+    if (validate_delete_clause(schema, schema_count, sql) != 0) {
         goto cleanup;
     }
 
     status = delete_rows_from_table(table_path, temp_path, schema, schema_count,
-                                    where, where_count, where_index);
+                                    sql);
 
 cleanup:
     free(schema);
@@ -328,8 +322,7 @@ int storage_select(const char *table, ParsedSQL *sql)
 /* 입력: 테이블 이름, SET 절 배열, SET 개수, WHERE 배열, WHERE 개수
  * 동작: UPDATE 저장 백엔드가 아직 없어 현재는 호출만 받아 둔다
  * 반환: 미구현 상태이므로 -1 */
-int storage_update(const char *table, SetClause *set, int set_count,
-                   WhereClause *where, int where_count)
+int storage_update(const char *table, ParsedSQL *sql)
 {
     char schema_path[STORAGE_PATH_MAX];
     char table_path[STORAGE_PATH_MAX];
@@ -337,10 +330,9 @@ int storage_update(const char *table, SetClause *set, int set_count,
     ColDef *schema = NULL;
     int schema_count = 0;
     int *set_indexes = NULL;
-    int where_index = -1;
     int status = -1;
 
-    if (validate_update_input(table, set, set_count, where, where_count) != 0) {
+    if (validate_update_input(table, sql) != 0) {
         return -1;
     }
 
@@ -360,17 +352,16 @@ int storage_update(const char *table, SetClause *set, int set_count,
         return -1;
     }
 
-    if (validate_update_set_clause(schema, schema_count, set, set_count, &set_indexes) != 0) {
+    if (validate_update_set_clause(schema, schema_count, sql->set, sql->set_count, &set_indexes) != 0) {
         goto cleanup;
     }
 
-    if (validate_delete_clause(schema, schema_count, where, where_count, &where_index) != 0) {
+    if (validate_delete_clause(schema, schema_count, sql) != 0) {
         goto cleanup;
     }
 
     status = update_rows_from_table(table_path, temp_path, schema, schema_count,
-                                    set, set_count, set_indexes,
-                                    where, where_count, where_index);
+                                    sql, set_indexes);
 
 cleanup:
     free(set_indexes);
@@ -474,56 +465,63 @@ static int validate_insert_input(const char *table, char **values, int count)
 /* 입력: 테이블 이름, WHERE 배열, WHERE 개수
  * 동작: DELETE v1 범위인 전체 삭제 또는 단일 WHERE 삭제만 허용하는지 확인
  * 반환: 유효하면 0, 현재 범위를 벗어나면 -1 */
-static int validate_delete_input(const char *table, WhereClause *where, int where_count)
+static int validate_delete_input(const char *table, const ParsedSQL *sql)
 {
+    int index;
+
     if (table == NULL || table[0] == '\0') {
         return -1;
     }
 
-    if (where_count < 0) {
+    if (sql == NULL || sql->where_count < 0) {
         return -1;
     }
 
-    if (where_count == 0) {
+    if (sql->where_count == 0) {
         return 0;
     }
 
-    if (where_count != 1 || where == NULL) {
+    if (sql->where == NULL) {
         return -1;
     }
 
-    if (where[0].column[0] == '\0' || where[0].op[0] == '\0') {
-        return -1;
+    for (index = 0; index < sql->where_count; ++index) {
+        if (sql->where[index].column[0] == '\0' || sql->where[index].op[0] == '\0') {
+            return -1;
+        }
     }
 
     return 0;
 }
 
-static int validate_update_input(const char *table, SetClause *set, int set_count,
-                                 WhereClause *where, int where_count)
+static int validate_update_input(const char *table, const ParsedSQL *sql)
 {
+    int index;
+
     if (table == NULL || table[0] == '\0') {
         return -1;
     }
 
-    if (set == NULL || set_count <= 0) {
+    if (sql == NULL || sql->set == NULL || sql->set_count <= 0) {
         return -1;
     }
 
-    if (where_count < 0) {
+    if (sql->where_count < 0) {
         return -1;
     }
 
-    if (where_count == 0) {
+    if (sql->where_count == 0) {
         return 0;
     }
 
-    if (where_count != 1 || where == NULL) {
+    if (sql->where == NULL) {
         return -1;
     }
 
-    if (where[0].column[0] == '\0' || where[0].op[0] == '\0') {
-        return -1;
+    for (index = 0; index < sql->where_count; ++index) {
+        if (sql->where[index].column[0] == '\0' || sql->where[index].op[0] == '\0') {
+            return -1;
+        }
     }
 
     return 0;
@@ -893,45 +891,51 @@ static int write_csv_field(FILE *fp, const char *value)
  * 동작: 단일 WHERE의 컬럼 존재 여부, 연산자 지원 여부, literal 타입 적합성 확인
  * 반환: 성공 시 대상 컬럼 index를 out_where_index에 쓰고 0, 실패 -1 */
 static int validate_delete_clause(const ColDef *schema, int schema_count,
-                                  WhereClause *where, int where_count,
-                                  int *out_where_index)
+                                  const ParsedSQL *sql)
 {
-    int where_index;
-    ColumnType type;
+    int index;
 
-    if (out_where_index == NULL) {
+    if (schema == NULL || sql == NULL) {
         return -1;
     }
 
-    *out_where_index = -1;
-
-    if (where_count == 0 || where == NULL) {
+    if (sql->where_count == 0 || sql->where == NULL) {
         return 0;
     }
 
-    if (where_count != 1) {
-        return -1;
+    for (index = 0; index < sql->where_count; ++index) {
+        int where_index;
+        ColumnType type;
+        const char *link;
+
+        where_index = find_schema_index(schema, schema_count, sql->where[index].column);
+        if (where_index < 0) {
+            return -1;
+        }
+
+        type = schema[where_index].type;
+        if (!is_supported_operator(sql->where[index].op)) {
+            return -1;
+        }
+
+        if (!is_supported_operator_for_type(type, sql->where[index].op)) {
+            return -1;
+        }
+
+        if (validate_literal_for_type(type, sql->where[index].op, sql->where[index].value) != 0) {
+            return -1;
+        }
+
+        if (index + 1 >= sql->where_count) {
+            continue;
+        }
+
+        link = resolve_where_link(sql, index);
+        if (!equals_ignore_case(link, "AND") && !equals_ignore_case(link, "OR")) {
+            return -1;
+        }
     }
 
-    where_index = find_schema_index(schema, schema_count, where[0].column);
-    if (where_index < 0) {
-        return -1;
-    }
-
-    type = schema[where_index].type;
-    if (!is_supported_operator(where[0].op)) {
-        return -1;
-    }
-
-    if (!is_supported_operator_for_type(type, where[0].op)) {
-        return -1;
-    }
-
-    if (validate_literal_for_type(type, where[0].op, where[0].value) != 0) {
-        return -1;
-    }
-
-    *out_where_index = where_index;
     return 0;
 }
 
@@ -992,8 +996,7 @@ static int validate_update_set_clause(const ColDef *schema, int schema_count,
  * 반환: 재작성 성공 0, CSV 파싱/쓰기/파일 교체 실패 -1 */
 static int delete_rows_from_table(const char *table_path, const char *temp_path,
                                   const ColDef *schema, int schema_count,
-                                  WhereClause *where, int where_count,
-                                  int where_index)
+                                  const ParsedSQL *sql)
 {
     FILE *source_fp = NULL;
     FILE *temp_fp = NULL;
@@ -1040,8 +1043,7 @@ static int delete_rows_from_table(const char *table_path, const char *temp_path,
             goto cleanup;
         }
 
-        if (row_matches_delete(schema, row, row_count, where, where_count,
-                               where_index, &matches) != 0) {
+        if (row_matches_delete(schema, schema_count, row, row_count, sql, &matches) != 0) {
             free_string_array(row, row_count);
             goto cleanup;
         }
@@ -1090,10 +1092,7 @@ cleanup:
 
 static int update_rows_from_table(const char *table_path, const char *temp_path,
                                   const ColDef *schema, int schema_count,
-                                  SetClause *set, int set_count,
-                                  const int *set_indexes,
-                                  WhereClause *where, int where_count,
-                                  int where_index)
+                                  const ParsedSQL *sql, const int *set_indexes)
 {
     FILE *source_fp = NULL;
     FILE *temp_fp = NULL;
@@ -1140,13 +1139,12 @@ static int update_rows_from_table(const char *table_path, const char *temp_path,
             goto cleanup;
         }
 
-        if (row_matches_delete(schema, row, row_count, where, where_count,
-                               where_index, &matches) != 0) {
+        if (row_matches_delete(schema, schema_count, row, row_count, sql, &matches) != 0) {
             free_string_array(row, row_count);
             goto cleanup;
         }
 
-        if (matches && apply_update_to_row(row, row_count, set, set_count, set_indexes) != 0) {
+        if (matches && apply_update_to_row(row, row_count, sql->set, sql->set_count, set_indexes) != 0) {
             free_string_array(row, row_count);
             goto cleanup;
         }
@@ -1445,28 +1443,48 @@ static int push_field(char ***fields, int *field_count,
 /* 입력: schema, 현재 row, optional WHERE 정보
  * 동작: 전체 삭제면 항상 match, 단일 WHERE면 대상 컬럼 값과 literal을 비교
  * 반환: 비교 성공 0, 결과는 out_match에 기록, 비교 불가면 -1 */
-static int row_matches_delete(const ColDef *schema, char **row, int row_count,
-                              WhereClause *where, int where_count,
-                              int where_index, int *out_match)
+static int row_matches_delete(const ColDef *schema, int schema_count,
+                              char **row, int row_count,
+                              const ParsedSQL *sql, int *out_match)
 {
+    int group_match;
+    int clause_match;
+    int index;
+
     if (out_match == NULL || schema == NULL || row == NULL) {
         return -1;
     }
 
-    if (where_count == 0 || where == NULL) {
+    if (sql == NULL || sql->where_count == 0 || sql->where == NULL) {
         *out_match = 1;
         return 0;
     }
 
-    if (where_count != 1 || where_index < 0 || where_index >= row_count) {
+    if (evaluate_select_clause(schema, schema_count, row, row_count, &sql->where[0], &group_match) != 0) {
         return -1;
     }
 
-    return compare_value_by_type(schema[where_index].type,
-                                 row[where_index],
-                                 where[0].op,
-                                 where[0].value,
-                                 out_match);
+    *out_match = 0;
+    for (index = 1; index < sql->where_count; ++index) {
+        const char *link = resolve_where_link(sql, index - 1);
+
+        if (evaluate_select_clause(schema, schema_count, row, row_count,
+                                   &sql->where[index], &clause_match) != 0) {
+            return -1;
+        }
+
+        if (equals_ignore_case(link, "AND")) {
+            group_match = group_match && clause_match;
+        } else if (equals_ignore_case(link, "OR")) {
+            *out_match = *out_match || group_match;
+            group_match = clause_match;
+        } else {
+            return -1;
+        }
+    }
+
+    *out_match = *out_match || group_match;
+    return 0;
 }
 
 static int apply_update_to_row(char **row, int row_count,
@@ -2217,45 +2235,32 @@ static int evaluate_select_clause(const ColDef *schema, int schema_count,
     return compare_status;
 }
 
+static const char *resolve_where_link(const ParsedSQL *sql, int index)
+{
+    if (sql == NULL || index < 0) {
+        return "AND";
+    }
+
+    if (sql->where_links != NULL && index < sql->where_count - 1 &&
+        sql->where_links[index] != NULL) {
+        return sql->where_links[index];
+    }
+
+    if (sql->where_logic[0] != '\0') {
+        return sql->where_logic;
+    }
+
+    return "AND";
+}
+
 static int row_matches_select(const ParsedSQL *sql, const ColDef *schema, int schema_count,
                               char **row, int row_count, int *matched)
 {
-    int index;
-    int clause_match;
-    int use_or_logic;
-
     if (sql == NULL || schema == NULL || row == NULL || matched == NULL) {
         return -1;
     }
 
-    if (sql->where_count <= 0 || sql->where == NULL) {
-        *matched = 1;
-        return 0;
-    }
-
-    use_or_logic = equals_ignore_case(sql->where_logic, "OR");
-    *matched = use_or_logic ? 0 : 1;
-
-    for (index = 0; index < sql->where_count; ++index) {
-        if (evaluate_select_clause(schema, schema_count, row, row_count,
-                                   &sql->where[index], &clause_match) != 0) {
-            return -1;
-        }
-
-        if (use_or_logic) {
-            *matched = *matched || clause_match;
-            if (*matched) {
-                return 0;
-            }
-        } else {
-            *matched = *matched && clause_match;
-            if (!*matched) {
-                return 0;
-            }
-        }
-    }
-
-    return 0;
+    return row_matches_delete(schema, schema_count, row, row_count, sql, matched);
 }
 
 static int collect_matching_rows(const ParsedSQL *sql, const ColDef *schema, int schema_count,

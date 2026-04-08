@@ -21,14 +21,14 @@
 #endif
 
 #define DATA_DIR "data"
+#define DATA_SCHEMA_DIR DATA_DIR "/schema"
+#define DATA_TABLES_DIR DATA_DIR "/tables"
 #define TEST_OUTPUT_PATH DATA_DIR "/test_output.txt"
-#define SCHEMA_DIR DATA_DIR "/schema"
-#define TABLE_DIR DATA_DIR "/tables"
-#define USERS_SCHEMA_PATH SCHEMA_DIR "/users.schema"
-#define USERS_CSV_PATH TABLE_DIR "/users.csv"
+#define USERS_SCHEMA_PATH DATA_DIR "/users.schema"
+#define USERS_CSV_PATH DATA_DIR "/users.csv"
+#define USERS_NESTED_SCHEMA_PATH DATA_SCHEMA_DIR "/users.schema"
+#define USERS_NESTED_CSV_PATH DATA_TABLES_DIR "/users.csv"
 
-/* strdup 대체 함수.
- * Windows 빌드에서도 동일하게 동작하도록 테스트 코드 안에서 직접 복사본을 만든다. */
 static char *duplicate_string(const char *source)
 {
     size_t length;
@@ -44,14 +44,12 @@ static char *duplicate_string(const char *source)
     return copy;
 }
 
-/* executor 테스트 실패 메시지를 한곳에서 같은 형식으로 찍는다. */
 static void fail_test(const char *message)
 {
     fprintf(stderr, "[EXECUTOR] FAIL: %s\n", message);
 }
 
-/* make clean 직후처럼 data 디렉터리가 비어 있어도 fixture 생성을 시작할 수 있게
- * 최상위 data 폴더를 먼저 보장한다. */
+/* Create the local data directory so fixtures work in a clean checkout. */
 static int ensure_data_dir(void)
 {
     if (make_dir(DATA_DIR) == 0) {
@@ -65,28 +63,23 @@ static int ensure_data_dir(void)
     return 1;
 }
 
-/* storage 가 기대하는 data/schema, data/tables 구조까지 함께 만든다.
- * executor 테스트도 실제 storage 경로 규약과 똑같이 맞춰야 fixture 가 먹는다. */
-static int ensure_fixture_dirs(void)
+static int ensure_executor_fixture_dirs(void)
 {
     if (ensure_data_dir() != 0) {
         return 1;
     }
 
-    if (make_dir(SCHEMA_DIR) == 0 || errno == EEXIST) {
-        errno = 0;
-    } else {
+    if (make_dir(DATA_SCHEMA_DIR) != 0 && errno != EEXIST) {
         return 1;
     }
 
-    if (make_dir(TABLE_DIR) == 0 || errno == EEXIST) {
-        return 0;
+    if (make_dir(DATA_TABLES_DIR) != 0 && errno != EEXIST) {
+        return 1;
     }
 
-    return 1;
+    return 0;
 }
 
-/* 캡처된 SELECT 출력 파일을 통째로 읽어서 문자열 비교에 쓸 버퍼로 바꾼다. */
 static char *read_text_file(const char *path)
 {
     FILE *file;
@@ -133,7 +126,6 @@ static char *read_text_file(const char *path)
     return buffer;
 }
 
-/* fixture schema/csv 내용을 테스트용 파일로 그대로 저장한다. */
 static int write_text_file(const char *path, const char *content)
 {
     FILE *file;
@@ -152,16 +144,16 @@ static int write_text_file(const char *path, const char *content)
     return 0;
 }
 
-/* 테스트가 남긴 산출물을 지워서 다음 실행이 같은 조건에서 시작되게 맞춘다. */
 static void cleanup_fixture_files(void)
 {
     remove(TEST_OUTPUT_PATH);
     remove(USERS_CSV_PATH);
     remove(USERS_SCHEMA_PATH);
+    remove(USERS_NESTED_CSV_PATH);
+    remove(USERS_NESTED_SCHEMA_PATH);
 }
 
-/* executor 테스트가 기대하는 users 테이블 fixture를 다시 만든다.
- * dev2의 storage 경로 규약(data/schema, data/tables)에 맞춘 파일을 준비한다. */
+/* Recreate fixture files so executor tests still pass after make clean. */
 static int prepare_users_fixture(void)
 {
     static const char *schema =
@@ -178,7 +170,7 @@ static int prepare_users_fixture(void)
         "3,Chloe,27,Seoul,true,2024-02-28,79.2\n"
         "4,Dylan,31,Incheon,true,2022-08-19,95.1\n";
 
-    if (ensure_fixture_dirs() != 0) {
+    if (ensure_executor_fixture_dirs() != 0) {
         return 1;
     }
 
@@ -190,11 +182,18 @@ static int prepare_users_fixture(void)
         return 1;
     }
 
+    if (write_text_file(USERS_NESTED_SCHEMA_PATH, schema) != 0) {
+        return 1;
+    }
+
+    if (write_text_file(USERS_NESTED_CSV_PATH, csv) != 0) {
+        return 1;
+    }
+
     return 0;
 }
 
-/* execute()가 stdout으로 찍는 SELECT 결과를 파일로 돌린 뒤 다시 읽어온다.
- * 이렇게 해야 표 헤더, 행, row count까지 문자열로 정확히 검증할 수 있다. */
+/* Redirect stdout so we can assert on the exact SELECT output. */
 static int capture_stdout_for_select(ParsedSQL *sql, char **output)
 {
     int saved_stdout;
@@ -226,7 +225,6 @@ static int capture_stdout_for_select(ParsedSQL *sql, char **output)
     return (*output == NULL) ? 1 : 0;
 }
 
-/* SELECT 실행 테스트에서 공통으로 쓰는 최소 ParsedSQL 뼈대를 만든다. */
 static ParsedSQL *make_base_select(void)
 {
     ParsedSQL *sql;
@@ -242,14 +240,11 @@ static ParsedSQL *make_base_select(void)
     return sql;
 }
 
-/* 출력 문자열 안에 기대 문구가 들어 있는지 간단히 확인하는 도우미다. */
 static int contains_text(const char *haystack, const char *needle)
 {
     return haystack != NULL && needle != NULL && strstr(haystack, needle) != NULL;
 }
 
-/* WHERE + ORDER BY + LIMIT가 붙은 SELECT 실행 결과가
- * 실제 출력 표에도 필터링/정렬/개수 제한이 반영되는지 본다. */
 static int test_execute_select_with_where_order_limit(void)
 {
     ParsedSQL *sql;
@@ -300,7 +295,6 @@ static int test_execute_select_with_where_order_limit(void)
     return 0;
 }
 
-/* COUNT(*) 집계 SELECT가 storage 경로에서 정상적으로 계산되는지 확인한다. */
 static int test_storage_select_count_star(void)
 {
     ParsedSQL *sql;
@@ -343,7 +337,6 @@ static int test_storage_select_count_star(void)
     return 0;
 }
 
-/* 존재하지 않는 컬럼을 조회하면 storage_select가 실패해야 한다. */
 static int test_storage_select_rejects_unknown_column(void)
 {
     ParsedSQL *sql;
@@ -370,8 +363,6 @@ static int test_storage_select_rejects_unknown_column(void)
     return 0;
 }
 
-/* parser 단위 테스트 뒤에 executor 쪽 회귀를 한 번 더 묶어서 실행한다.
- * fixture 준비부터 정리까지 한 흐름으로 관리해 전체 make test를 안정화한다. */
 int run_executor_tests(void)
 {
     int status;

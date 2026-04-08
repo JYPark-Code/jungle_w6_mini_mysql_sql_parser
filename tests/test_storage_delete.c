@@ -30,6 +30,8 @@ static int write_text_file(const char *path, const char *content);
 static int read_text_file(const char *path, char *buffer, size_t size);
 static int prepare_table(const char *table, const char *schema_content, const char *table_content);
 static WhereClause make_where(const char *column, const char *op, const char *value);
+static int call_storage_delete(const char *table, WhereClause *where, int where_count,
+                               char **where_links, const char *where_logic);
 
 static int test_delete_all_rows_success(void);
 static int test_delete_single_equals_success(void);
@@ -43,7 +45,10 @@ static int test_delete_multiline_field_success(void);
 static int test_delete_zero_match_success(void);
 static int test_delete_missing_schema_fails(void);
 static int test_delete_missing_table_fails(void);
-static int test_delete_multiple_where_rejected(void);
+static int test_delete_multiple_where_and_success(void);
+static int test_delete_multiple_where_or_success(void);
+static int test_delete_multiple_where_mixed_success(void);
+static int test_delete_multiple_where_fallback_success(void);
 static int test_delete_unknown_column_fails(void);
 static int test_delete_invalid_operator_fails(void);
 static int test_delete_malformed_csv_fails(void);
@@ -81,7 +86,10 @@ int main(void)
         {"delete zero match success", test_delete_zero_match_success},
         {"delete missing schema fails", test_delete_missing_schema_fails},
         {"delete missing table fails", test_delete_missing_table_fails},
-        {"delete multiple where rejected", test_delete_multiple_where_rejected},
+        {"delete multiple where AND success", test_delete_multiple_where_and_success},
+        {"delete multiple where OR success", test_delete_multiple_where_or_success},
+        {"delete multiple where mixed success", test_delete_multiple_where_mixed_success},
+        {"delete multiple where fallback success", test_delete_multiple_where_fallback_success},
         {"delete unknown column fails", test_delete_unknown_column_fails},
         {"delete invalid operator fails", test_delete_invalid_operator_fails},
         {"delete malformed csv fails", test_delete_malformed_csv_fails},
@@ -280,6 +288,28 @@ static WhereClause make_where(const char *column, const char *op, const char *va
 
     return where;
 }
+
+static int call_storage_delete(const char *table, WhereClause *where, int where_count,
+                               char **where_links, const char *where_logic)
+{
+    ParsedSQL sql;
+
+    memset(&sql, 0, sizeof(sql));
+    if (table != NULL) {
+        snprintf(sql.table, sizeof(sql.table), "%s", table);
+    }
+    sql.where = where;
+    sql.where_count = where_count;
+    sql.where_links = where_links;
+    if (where_logic != NULL) {
+        snprintf(sql.where_logic, sizeof(sql.where_logic), "%s", where_logic);
+    }
+
+    return storage_delete(table, &sql);
+}
+
+#define storage_delete(table, where, where_count) \
+    call_storage_delete((table), (where), (where_count), NULL, NULL)
 
 static int test_delete_all_rows_success(void)
 {
@@ -511,19 +541,97 @@ cleanup:
     return status;
 }
 
-static int test_delete_multiple_where_rejected(void)
+static int test_delete_multiple_where_and_success(void)
 {
-    WhereClause where[2];
+    WhereClause where[3];
+    char *where_links[] = {"AND", "AND"};
+    char buffer[BUFFER_SIZE];
     int status = 1;
 
-    where[0] = make_where("id", "=", "1");
-    where[1] = make_where("name", "=", "kim");
+    where[0] = make_where("id", ">=", "2");
+    where[1] = make_where("age", ">=", "30");
+    where[2] = make_where("name", "!=", "park");
 
     reset_test_environment();
     ASSERT_TRUE(prepare_table("users",
-                              "id,INT\nname,VARCHAR\n",
-                              "1,kim\n2,lee\n") == 0);
-    ASSERT_TRUE(storage_delete("users", where, 2) == -1);
+                              "id,INT\nname,VARCHAR\nage,INT\n",
+                              "1,kim,20\n2,lee,31\n3,park,28\n4,choi,34\n") == 0);
+    ASSERT_TRUE(call_storage_delete("users", where, 3, where_links, NULL) == 0);
+    ASSERT_TRUE(read_text_file("data/tables/users.csv", buffer, sizeof(buffer)) == 0);
+    ASSERT_TRUE(strcmp(buffer, "1,kim,20\n3,park,28\n") == 0);
+    status = 0;
+
+cleanup:
+    reset_test_environment();
+    return status;
+}
+
+static int test_delete_multiple_where_or_success(void)
+{
+    WhereClause where[3];
+    char *where_links[] = {"OR", "OR"};
+    char buffer[BUFFER_SIZE];
+    int status = 1;
+
+    where[0] = make_where("id", "=", "1");
+    where[1] = make_where("name", "=", "park");
+    where[2] = make_where("age", ">", "40");
+
+    reset_test_environment();
+    ASSERT_TRUE(prepare_table("users",
+                              "id,INT\nname,VARCHAR\nage,INT\n",
+                              "1,kim,20\n2,lee,31\n3,park,28\n4,choi,34\n") == 0);
+    ASSERT_TRUE(call_storage_delete("users", where, 3, where_links, NULL) == 0);
+    ASSERT_TRUE(read_text_file("data/tables/users.csv", buffer, sizeof(buffer)) == 0);
+    ASSERT_TRUE(strcmp(buffer, "2,lee,31\n4,choi,34\n") == 0);
+    status = 0;
+
+cleanup:
+    reset_test_environment();
+    return status;
+}
+
+static int test_delete_multiple_where_mixed_success(void)
+{
+    WhereClause where[3];
+    char *where_links[] = {"OR", "AND"};
+    char buffer[BUFFER_SIZE];
+    int status = 1;
+
+    where[0] = make_where("name", "=", "kim");
+    where[1] = make_where("name", "=", "lee");
+    where[2] = make_where("age", ">=", "30");
+
+    reset_test_environment();
+    ASSERT_TRUE(prepare_table("users",
+                              "id,INT\nname,VARCHAR\nage,INT\n",
+                              "1,kim,20\n2,lee,31\n3,park,28\n4,choi,34\n") == 0);
+    ASSERT_TRUE(call_storage_delete("users", where, 3, where_links, NULL) == 0);
+    ASSERT_TRUE(read_text_file("data/tables/users.csv", buffer, sizeof(buffer)) == 0);
+    ASSERT_TRUE(strcmp(buffer, "3,park,28\n4,choi,34\n") == 0);
+    status = 0;
+
+cleanup:
+    reset_test_environment();
+    return status;
+}
+
+static int test_delete_multiple_where_fallback_success(void)
+{
+    WhereClause where[2];
+    char buffer[BUFFER_SIZE];
+    int status = 1;
+
+    where[0] = make_where("age", ">=", "30");
+    where[1] = make_where("name", "=", "park");
+
+    reset_test_environment();
+    ASSERT_TRUE(prepare_table("users",
+                              "id,INT\nname,VARCHAR\nage,INT\n",
+                              "1,kim,20\n2,lee,31\n3,park,28\n4,choi,34\n") == 0);
+    ASSERT_TRUE(call_storage_delete("users", where, 2, NULL, "OR") == 0);
+    ASSERT_TRUE(read_text_file("data/tables/users.csv", buffer, sizeof(buffer)) == 0);
+    ASSERT_TRUE(strcmp(buffer, "1,kim,20\n") == 0);
     status = 0;
 
 cleanup:

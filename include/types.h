@@ -201,8 +201,8 @@ void       execute(ParsedSQL *sql);
  */
 int        storage_insert(const char *table, char **columns, char **values, int count);
 int        storage_select(const char *table, ParsedSQL *sql);
-int        storage_delete(const char *table, WhereClause *where, int where_count);
-int        storage_update(const char *table, SetClause *set, int set_count, WhereClause *where, int where_count);
+int        storage_delete(const char *table, ParsedSQL *sql);
+int        storage_update(const char *table, ParsedSQL *sql);
 int        storage_create(const char *table, char **col_defs, int count);
 
 /* ─── Phase 1 신설 함수 (지용 feature/p1-rowset 에서 본문 구현) ───
