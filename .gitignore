@@ -3,7 +3,6 @@ build/
 *.o
 *.exe
 *.out
-docs/
 sqlparser
 test_runner
 data/*.csv
