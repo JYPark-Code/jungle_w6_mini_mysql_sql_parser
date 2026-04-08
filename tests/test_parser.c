@@ -306,6 +306,91 @@ static void test_tokens_null_safe(void) {
     g_pass++;
 }
 
+/* ─── 토크나이저 엣지 케이스 ─────────────────────────────── */
+
+static void test_tokens_quoted_string(void) {
+    SECTION("TOKENS: 따옴표 문자열");
+    char *s = capture_tokens("INSERT INTO t (a) VALUES ('hello world')");
+    CHECK(strstr(s, "hello world") != NULL, "공백 있는 문자열 한 토큰");
+    free(s);
+
+    char *s2 = capture_tokens("SELECT * FROM t WHERE a = \"foo bar\"");
+    CHECK(strstr(s2, "foo bar") != NULL, "double-quoted 문자열");
+    free(s2);
+}
+
+static void test_tokens_empty_quoted(void) {
+    SECTION("TOKENS: 빈 따옴표 문자열");
+    char *s = capture_tokens("INSERT INTO t (a) VALUES ('')");
+    /* INSERT INTO t ( a ) VALUES ( '' ) → 10 tokens (빈 string 도 1개) */
+    CHECK(strstr(s, "tokens (10)") != NULL, "빈 string 도 토큰 1개");
+    free(s);
+}
+
+static void test_tokens_date_string(void) {
+    SECTION("TOKENS: DATE 문자열 (YYYY-MM-DD)");
+    char *s = capture_tokens("INSERT INTO t (d) VALUES ('2024-01-15')");
+    CHECK(strstr(s, "2024-01-15") != NULL, "date 한 토큰");
+    free(s);
+}
+
+static void test_tokens_compound_operators(void) {
+    SECTION("TOKENS: 복합 비교 연산자");
+    const char *cases[] = {
+        "SELECT * FROM t WHERE a >= 1",
+        "SELECT * FROM t WHERE a <= 1",
+        "SELECT * FROM t WHERE a != 1",
+    };
+    const char *expected[] = {">=", "<=", "!="};
+    for (int i = 0; i < 3; i++) {
+        char *s = capture_tokens(cases[i]);
+        CHECK(strstr(s, expected[i]) != NULL, expected[i]);
+        free(s);
+    }
+}
+
+static void test_tokens_negative_number(void) {
+    SECTION("TOKENS: 음수");
+    char *s = capture_tokens("SELECT * FROM t WHERE a = -5");
+    CHECK(strstr(s, "-5") != NULL, "음수 -5 한 토큰");
+    free(s);
+}
+
+static void test_tokens_float_number(void) {
+    SECTION("TOKENS: float");
+    char *s = capture_tokens("INSERT INTO t (a) VALUES (3.14)");
+    CHECK(strstr(s, "3.14") != NULL, "3.14 한 토큰");
+    free(s);
+}
+
+static void test_tokens_multiline(void) {
+    SECTION("TOKENS: 여러 줄");
+    char *s = capture_tokens(
+        "SELECT id\n"
+        "FROM users\n"
+        "WHERE age > 20");
+    CHECK(strstr(s, "tokens (8)") != NULL, "8 tokens across lines");
+    free(s);
+}
+
+static void test_tokens_tabs(void) {
+    SECTION("TOKENS: 탭/연속 공백");
+    char *s = capture_tokens("SELECT\t\tid\t\tFROM\t\tt");
+    CHECK(strstr(s, "tokens (4)") != NULL, "탭 무관 4 tokens");
+    free(s);
+}
+
+static void test_tokens_comment_inline(void) {
+    SECTION("TOKENS: 라인 주석 무시");
+    char *s = capture_tokens(
+        "-- comment line\n"
+        "SELECT id FROM t -- trailing\n");
+    CHECK(strstr(s, "comment") == NULL, "주석 내용 토큰화 안 됨");
+    CHECK(strstr(s, "trailing") == NULL, "trailing 주석 무시");
+    CHECK(strstr(s, "SELECT") != NULL, "SELECT 토큰 존재");
+    free(s);
+}
+
 /* ─── JSON 출력 (print_json) 테스트 ──────────────────────── */
 
 static char *capture_json(const char *sql_text) {
@@ -410,6 +495,15 @@ int main(void) {
     test_tokens_basic();
     test_tokens_punctuation();
     test_tokens_null_safe();
+    test_tokens_quoted_string();
+    test_tokens_empty_quoted();
+    test_tokens_date_string();
+    test_tokens_compound_operators();
+    test_tokens_negative_number();
+    test_tokens_float_number();
+    test_tokens_multiline();
+    test_tokens_tabs();
+    test_tokens_comment_inline();
 
     test_json_create();
     test_json_select();
