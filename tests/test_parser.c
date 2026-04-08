@@ -268,6 +268,44 @@ static void test_ast_null_safe(void) {
     g_pass++;
 }
 
+/* ─── --tokens 토큰 덤프 테스트 ──────────────────────────── */
+
+static char *capture_tokens(const char *sql_text) {
+    char  *buf = NULL;
+    size_t len = 0;
+    FILE  *out = open_memstream(&buf, &len);
+    print_tokens(out, sql_text);
+    fclose(out);
+    return buf;
+}
+
+static void test_tokens_basic(void) {
+    SECTION("TOKENS: 기본 SELECT");
+    char *s = capture_tokens("SELECT id FROM t");
+    CHECK(strstr(s, "tokens (4)") != NULL, "4 tokens");
+    CHECK(strstr(s, "SELECT")     != NULL, "SELECT");
+    CHECK(strstr(s, "id")         != NULL, "id");
+    CHECK(strstr(s, "FROM")       != NULL, "FROM");
+    free(s);
+}
+
+static void test_tokens_punctuation(void) {
+    SECTION("TOKENS: 괄호/콤마/세미콜론");
+    char *s = capture_tokens("INSERT INTO t (a, b) VALUES (1, 2);");
+    CHECK(strstr(s, "(") != NULL, "(");
+    CHECK(strstr(s, ")") != NULL, ")");
+    CHECK(strstr(s, ",") != NULL, ",");
+    CHECK(strstr(s, ";") != NULL, ";");
+    free(s);
+}
+
+static void test_tokens_null_safe(void) {
+    SECTION("TOKENS: NULL safe");
+    print_tokens(NULL, NULL);
+    print_tokens(stderr, NULL);
+    g_pass++;
+}
+
 /* ─── JSON 출력 (print_json) 테스트 ──────────────────────── */
 
 static char *capture_json(const char *sql_text) {
@@ -368,6 +406,10 @@ int main(void) {
     test_ast_select();
     test_ast_insert();
     test_ast_null_safe();
+
+    test_tokens_basic();
+    test_tokens_punctuation();
+    test_tokens_null_safe();
 
     test_json_create();
     test_json_select();

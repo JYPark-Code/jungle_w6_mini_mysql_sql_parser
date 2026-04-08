@@ -267,6 +267,18 @@ static void parse_create(TokenList *t, ParsedSQL *sql) {
     expect(t, ")");
 }
 
+/* ─── --tokens 플래그용 토큰 덤프 (parse_insert 위) ─────────── */
+
+void print_tokens(FILE *out, const char *input) {
+    if (!out || !input) return;
+    TokenList *t = tokenize(input);
+    fprintf(out, "tokens (%d):\n", t->count);
+    for (int i = 0; i < t->count; i++) {
+        fprintf(out, "  [%2d] %s\n", i, t->tok[i]);
+    }
+    tl_free(t);
+}
+
 static void parse_insert(TokenList *t, ParsedSQL *sql) {
     sql->type = QUERY_INSERT;
     if (!expect(t, "INTO")) return;

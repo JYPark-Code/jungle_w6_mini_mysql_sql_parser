@@ -90,6 +90,7 @@ typedef struct {
 /* parser.c */
 ParsedSQL *parse_sql(const char *input);
 void       free_parsed(ParsedSQL *sql);
+void       print_tokens(FILE *out, const char *input);  /* --tokens 플래그용 */
 
 /* ast_print.c — --debug 플래그용 AST 트리 시각화 */
 void       print_ast(FILE *out, const ParsedSQL *sql);

@@ -2,8 +2,9 @@
  *
  * 사용:
  *   ./sqlparser query.sql
- *   ./sqlparser query.sql --json    (오후 구현)
- *   ./sqlparser query.sql --debug   (오후 구현, AST 시각화)
+ *   ./sqlparser query.sql --debug    AST 트리 출력
+ *   ./sqlparser query.sql --json     ParsedSQL JSON 직렬화
+ *   ./sqlparser query.sql --tokens   토크나이저 출력만 (파싱/실행 안 함)
  */
 
 #define _POSIX_C_SOURCE 200809L
@@ -26,8 +27,12 @@ static char *read_file(const char *path) {
     return buf;
 }
 
-/* 단일 statement 처리: 파싱 → (debug/json 출력) → 실행 */
-static void process_stmt(const char *stmt, int debug_mode, int json_mode) {
+/* 단일 statement 처리: 파싱 → (debug/json/tokens 출력) → 실행 */
+static void process_stmt(const char *stmt, int debug_mode, int json_mode, int tokens_mode) {
+    if (tokens_mode) {
+        print_tokens(stdout, stmt);
+        return;   /* tokens 모드는 파싱/실행 안 함 (토크나이저 단독 검증용) */
+    }
     ParsedSQL *sql = parse_sql(stmt);
     if (sql && sql->type != QUERY_UNKNOWN) {
         if (debug_mode) print_ast(stdout, sql);
@@ -38,7 +43,7 @@ static void process_stmt(const char *stmt, int debug_mode, int json_mode) {
 }
 
 /* 세미콜론 단위 split. 따옴표 안의 ; 는 무시 */
-static void run_statements(const char *src, int debug_mode, int json_mode) {
+static void run_statements(const char *src, int debug_mode, int json_mode, int tokens_mode) {
     const char *p = src;
     const char *start = p;
     char quote = 0;
@@ -53,7 +58,7 @@ static void run_statements(const char *src, int debug_mode, int json_mode) {
             char *stmt = malloc(len + 1);
             memcpy(stmt, start, len);
             stmt[len] = '\0';
-            process_stmt(stmt, debug_mode, json_mode);
+            process_stmt(stmt, debug_mode, json_mode, tokens_mode);
             free(stmt);
             start = p + 1;
         }
@@ -62,25 +67,25 @@ static void run_statements(const char *src, int debug_mode, int json_mode) {
 
     /* 끝에 ; 없는 마지막 statement */
     while (*start && (*start == ' ' || *start == '\n' || *start == '\t' || *start == '\r')) start++;
-    if (*start) process_stmt(start, debug_mode, json_mode);
+    if (*start) process_stmt(start, debug_mode, json_mode, tokens_mode);
 }
 
 int main(int argc, char **argv) {
     if (argc < 2) {
-        fprintf(stderr, "usage: %s <file.sql> [--json] [--debug]\n", argv[0]);
+        fprintf(stderr, "usage: %s <file.sql> [--json] [--debug] [--tokens]\n", argv[0]);
         return 1;
     }
 
-    /* 플래그 파싱 (오후 구현 예정 — 자리만) */
-    int json_mode = 0, debug_mode = 0;
+    int json_mode = 0, debug_mode = 0, tokens_mode = 0;
     for (int i = 2; i < argc; i++) {
-        if (strcmp(argv[i], "--json")  == 0) json_mode  = 1;
-        if (strcmp(argv[i], "--debug") == 0) debug_mode = 1;
+        if (strcmp(argv[i], "--json")   == 0) json_mode   = 1;
+        if (strcmp(argv[i], "--debug")  == 0) debug_mode  = 1;
+        if (strcmp(argv[i], "--tokens") == 0) tokens_mode = 1;
     }
     char *src = read_file(argv[1]);
     if (!src) return 1;
 
-    run_statements(src, debug_mode, json_mode);
+    run_statements(src, debug_mode, json_mode, tokens_mode);
 
     free(src);
     return 0;
