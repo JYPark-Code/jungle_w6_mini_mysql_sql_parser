@@ -26,6 +26,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>     /* dup, dup2 */
+#include <fcntl.h>      /* open, O_WRONLY */
 
 #define MINISQL_VERSION "0.1.0"
 
@@ -85,7 +87,16 @@ static char *read_file(const char *path) {
  *   json_mode    → JSON 출력
  *   format_mode  → 정규화 SQL 출력
  *
- * 그 다음 execute() 로 실제 실행 (executor 가 storage 호출). */
+ * 그 다음 execute() 로 실제 실행 (executor 가 storage 호출).
+ *
+ * ▣ json_mode 일 때의 처리
+ *   --json 은 "기계가 읽을 출력" 모드. storage_select 가 stdout 에 찍는
+ *   사람용 결과 표 ("id | name", "(N rows)") 가 같이 섞이면 JSON stream 이
+ *   오염되어 server.py 같은 소비자가 raw 로 잡는다.
+ *   해결: json_mode 인 동안 execute 호출 시 stdout 을 /dev/null 로 잠시
+ *   리다이렉트 → 표 출력은 버려지고 JSON 한 줄만 깨끗하게 남는다.
+ *   (storage 코드 변경 없이 main.c 에서 격리.)
+ */
 static void process_stmt(const char *stmt, int debug_mode, int json_mode,
                          int tokens_mode, int format_mode) {
     /* tokens 모드는 토크나이저만 검증하는 모드라 파싱/실행 자체를 건너뛴다. */
@@ -98,7 +109,26 @@ static void process_stmt(const char *stmt, int debug_mode, int json_mode,
         if (debug_mode)  print_ast(stdout, sql);
         if (json_mode)   print_json(stdout, sql);
         if (format_mode) print_format(stdout, sql);
-        execute(sql);
+
+        if (json_mode) {
+            /* execute 동안 stdout 을 /dev/null 로 잠시 리다이렉트해서
+             * storage 의 표 출력이 JSON stream 에 섞이지 않게 한다. */
+            fflush(stdout);
+            int saved_stdout = dup(STDOUT_FILENO);
+            int devnull = open("/dev/null", O_WRONLY);
+            if (saved_stdout >= 0 && devnull >= 0) {
+                dup2(devnull, STDOUT_FILENO);
+                execute(sql);
+                fflush(stdout);
+                dup2(saved_stdout, STDOUT_FILENO);
+            } else {
+                execute(sql);   /* fallback: 리다이렉트 실패 시 그냥 실행 */
+            }
+            if (saved_stdout >= 0) close(saved_stdout);
+            if (devnull >= 0)      close(devnull);
+        } else {
+            execute(sql);
+        }
     }
     free_parsed(sql);   /* 메모리 누수 방지 */
 }
