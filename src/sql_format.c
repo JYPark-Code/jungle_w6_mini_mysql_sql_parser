@@ -47,13 +47,28 @@ static void emit_value(FILE *out, const char *v) {
     else                fprintf(out, "%s",   v);
 }
 
+static const char *where_link_at(const ParsedSQL *sql, int index) {
+    const char *link;
+
+    if (sql == NULL || index < 0) return "";
+    if (sql->where_links != NULL) link = sql->where_links[index];
+    else if (sql->where_logic[0]) link = sql->where_logic;
+    else link = "AND";
+
+    if (link != NULL &&
+        (link[0] == 'O' || link[0] == 'o') &&
+        (link[1] == 'R' || link[1] == 'r') &&
+        link[2] == '\0') return "OR";
+    return "AND";
+}
+
 /* emit_where: WHERE 절을 출력. WHERE 가 없으면 아무것도 안 함.
  * 두 번째 조건 앞에는 AND/OR 같은 결합 키워드가 들어간다. */
 static void emit_where(FILE *out, const ParsedSQL *sql) {
     if (sql->where_count == 0) return;
     fprintf(out, " WHERE ");
     for (int i = 0; i < sql->where_count; i++) {
-        if (i > 0) fprintf(out, " %s ", sql->where_logic);
+        if (i > 0) fprintf(out, " %s ", where_link_at(sql, i - 1));
         fprintf(out, "%s %s ", sql->where[i].column, sql->where[i].op);
         emit_value(out, sql->where[i].value);
     }

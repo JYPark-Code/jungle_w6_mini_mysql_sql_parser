@@ -64,6 +64,18 @@ static void emit_str_array(FILE *out, char **arr, int n) {
     fputc(']', out);
 }
 
+/* condition_index 번째 WHERE 조건 앞에 붙는 결합자.
+ * Phase 1 에서는 where_links 를 우선 쓰고, 1주차 호환을 위해 where_logic 으로
+ * fallback 한다. */
+static const char *where_link_at(const ParsedSQL *sql, int condition_index) {
+    if (!sql || condition_index <= 0) return NULL;
+    if (sql->where_links && sql->where_links[condition_index - 1]) {
+        return sql->where_links[condition_index - 1];
+    }
+    if (sql->where_logic[0]) return sql->where_logic;
+    return NULL;
+}
+
 /* print_json: ParsedSQL 을 통째로 JSON 으로 출력.
  *
  * 큰 그림은 print_ast 와 같다. 비어있는 필드는 키 자체를 생략.
@@ -95,7 +107,7 @@ void print_json(FILE *out, const ParsedSQL *sql) {
         emit_str_array(out, sql->col_defs, sql->col_def_count);
     }
 
-    /* WHERE 조건들. 객체 배열로 표현. */
+    /* WHERE 조건들. 객체 배열 + 결합자 배열(where_links) 로 표현. */
     if (sql->where_count > 0) {
         fprintf(out, ",\"where\":[");
         for (int i = 0; i < sql->where_count; i++) {
@@ -107,8 +119,20 @@ void print_json(FILE *out, const ParsedSQL *sql) {
             fputc('}', out);
         }
         fputc(']', out);
+        if (sql->where_count > 1) {
+            fprintf(out, ",\"where_links\":[");
+            for (int i = 1; i < sql->where_count; i++) {
+                const char *link = where_link_at(sql, i);
+                if (i > 1) fputc(',', out);
+                emit_str(out, link ? link : "");
+            }
+            fputc(']', out);
+        }
         /* AND/OR 결합이 있으면 함께. */
-        if (sql->where_logic[0]) {
+        if (sql->where_count > 1 && sql->where_links != NULL) {
+            fprintf(out, ",\"where_links\":");
+            emit_str_array(out, sql->where_links, sql->where_count - 1);
+        } else if (sql->where_logic[0]) {
             fprintf(out, ",\"where_logic\":");
             emit_str(out, sql->where_logic);
         }
