@@ -151,6 +151,29 @@
 - [x] admin 머지 — main `142efad`
 - [x] README 1차 → 후속 흐름 갱신 (`29ad185`)
 
+### MP5 — PR #31 (세인 CLI design) Cherry-pick ✅
+- [x] feature/CLI-design 브랜치는 건들지 않음 (작업자 권리 보존)
+- [x] 옵션 1: cherry-pick 으로 **컬러 + 배너만** 추출 (Phase 1 storage.c 100% 보존)
+- [x] `ast_print.c` ANSI 컬러 + `isatty()` 가드 (메모리 스트림 fixture 안전)
+- [x] `storage.c` 테이블 헤더 컬러 + `storage_file_is_tty()` 가드
+- [x] `main.c` `print_welcome_banner()` (Hello Kitty + WELCOME + SQL PARSER)
+- [x] 한국어 비교 평가 + 통합 커밋 `Co-Authored-By` 부착
+
+---
+
+## 협업 패턴 정리 (1주차 → Phase 1 → CLI cherry-pick)
+
+| 패턴 | 적용 PR | 핵심 |
+|---|---|---|
+| **Winner-Takes-All** | 1주차 INSERT (B vs C) | 두 PR 중 더 나은 쪽을 통째로 머지, 탈락 쪽엔 피드백 |
+| **옵션 B Mixed Merge** | Phase 1 PR #32 vs #33 | 충돌 함수 단위로 비교 → 함수마다 베스트 코드 채택 |
+| **Cherry-pick 부분 추출** | PR #31 (세인 CLI design) | 작업자 브랜치 보존, 가치 있는 부분(컬러+배너)만 골라 새 통합 커밋, Co-Authored-By 부착 |
+
+세 패턴 공통 원칙:
+- 작업자의 시간/노력은 항상 존중 (탈락해도 피드백, 미머지여도 cherry-pick + 크레딧)
+- 머지 결정의 기준은 **테스트 + 메모리 안전 + 인터페이스 일관성**
+- "우선권을 가지는 코드" 를 PM 이 명시 (예: Phase 1 storage.c 보호)
+
 ---
 
 ## storage 인터페이스 계약 (Phase 1 갱신)
