@@ -1,0 +1,86 @@
+/* main.c — sqlparser CLI 진입점
+ *
+ * 사용:
+ *   ./sqlparser query.sql
+ *   ./sqlparser query.sql --json    (오후 구현)
+ *   ./sqlparser query.sql --debug   (오후 구현, AST 시각화)
+ */
+
+#define _POSIX_C_SOURCE 200809L
+
+#include "types.h"
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+static char *read_file(const char *path) {
+    FILE *fp = fopen(path, "rb");
+    if (!fp) { perror(path); return NULL; }
+    fseek(fp, 0, SEEK_END);
+    long sz = ftell(fp);
+    fseek(fp, 0, SEEK_SET);
+    char *buf = malloc(sz + 1);
+    if (fread(buf, 1, sz, fp) != (size_t)sz) { free(buf); fclose(fp); return NULL; }
+    buf[sz] = '\0';
+    fclose(fp);
+    return buf;
+}
+
+/* 세미콜론 단위 split. 따옴표 안의 ; 는 무시 */
+static void run_statements(const char *src) {
+    const char *p = src;
+    const char *start = p;
+    char quote = 0;
+
+    while (*p) {
+        if (quote) {
+            if (*p == quote) quote = 0;
+        } else if (*p == '\'' || *p == '"') {
+            quote = *p;
+        } else if (*p == ';') {
+            size_t len = (size_t)(p - start);
+            char *stmt = malloc(len + 1);
+            memcpy(stmt, start, len);
+            stmt[len] = '\0';
+
+            ParsedSQL *sql = parse_sql(stmt);
+            if (sql && sql->type != QUERY_UNKNOWN) execute(sql);
+            free_parsed(sql);
+            free(stmt);
+
+            start = p + 1;
+        }
+        p++;
+    }
+
+    /* 끝에 ; 없는 마지막 statement */
+    while (*start && (*start == ' ' || *start == '\n' || *start == '\t' || *start == '\r')) start++;
+    if (*start) {
+        ParsedSQL *sql = parse_sql(start);
+        if (sql && sql->type != QUERY_UNKNOWN) execute(sql);
+        free_parsed(sql);
+    }
+}
+
+int main(int argc, char **argv) {
+    if (argc < 2) {
+        fprintf(stderr, "usage: %s <file.sql> [--json] [--debug]\n", argv[0]);
+        return 1;
+    }
+
+    /* 플래그 파싱 (오후 구현 예정 — 자리만) */
+    int json_mode = 0, debug_mode = 0;
+    for (int i = 2; i < argc; i++) {
+        if (strcmp(argv[i], "--json")  == 0) json_mode  = 1;
+        if (strcmp(argv[i], "--debug") == 0) debug_mode = 1;
+    }
+    (void)json_mode; (void)debug_mode;
+
+    char *src = read_file(argv[1]);
+    if (!src) return 1;
+
+    run_statements(src);
+
+    free(src);
+    return 0;
+}

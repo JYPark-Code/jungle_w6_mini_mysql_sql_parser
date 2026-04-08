@@ -4,3 +4,7 @@ build/
 *.exe
 *.out
 docs/
+sqlparser
+test_runner
+data/*.csv
+data/*.schema
