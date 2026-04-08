@@ -10,6 +10,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+int run_executor_tests(void);
+
 static int g_pass = 0;
 static int g_fail = 0;
 
@@ -595,5 +597,9 @@ int main(void) {
     test_format_null_safe();
 
     fprintf(stderr, "\n%d passed, %d failed\n", g_pass, g_fail);
+    if (run_executor_tests() != 0) return 1;
     return g_fail == 0 ? 0 : 1;
 }
+
+
+
