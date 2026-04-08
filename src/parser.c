@@ -305,11 +305,83 @@ static char **parse_ident_list(TokenList *t, int *out_count) {
  *   WHERE age > 20 AND name = 'bob'   → 조건 2개 + 결합 "AND"
  *
  * 1주차에서는 조건 2개까지만 지원 (실용적으로 충분, 구조 단순). */
-static void parse_where(TokenList *t, ParsedSQL *sql) {
-    sql->where = calloc(2, sizeof(WhereClause));   /* 최대 2칸 미리 잡기 */
-    sql->where_count = 0;
+static int is_where_link_token(const char *token) {
+    return token != NULL && (ieq(token, "AND") || ieq(token, "OR"));
+}
 
-    for (int i = 0; i < 2; i++) {
+static void parse_where(TokenList *t, ParsedSQL *sql) {
+    sql->where = NULL;
+    sql->where_links = NULL;
+    sql->where_count = 0;
+    sql->where_logic[0] = '\0';
+    sql->where = calloc(2, sizeof(WhereClause));   /* 최대 2칸 미리 잡기 */
+    int clause_capacity = 2;
+    int link_capacity = 0;
+    int link_count = 0;
+    const char *first_link = NULL;
+    int same_logic = 1;
+
+    while (1) {
+        const char *col;
+        const char *op;
+        const char *val;
+        const char *link;
+        WhereClause *grown_where;
+
+        sql->where_count = 0;
+        while (1) {
+            col = advance(t);
+            op = advance(t);
+            val = advance(t);
+            if (!col || !op || !val) break;
+
+            if (sql->where_count >= clause_capacity) {
+                clause_capacity *= 2;
+                grown_where = realloc(sql->where, (size_t)clause_capacity * sizeof(*sql->where));
+                if (grown_where == NULL) return;
+                sql->where = grown_where;
+            }
+
+            memset(&sql->where[sql->where_count], 0, sizeof(sql->where[sql->where_count]));
+            strncpy(sql->where[sql->where_count].column, col,
+                    sizeof(sql->where[sql->where_count].column) - 1);
+            strncpy(sql->where[sql->where_count].op, op,
+                    sizeof(sql->where[sql->where_count].op) - 1);
+            strncpy(sql->where[sql->where_count].value, val,
+                    sizeof(sql->where[sql->where_count].value) - 1);
+            sql->where_count++;
+
+            link = peek(t);
+            if (!is_where_link_token(link)) break;
+
+            if (link_count >= link_capacity) {
+                char **grown_links;
+
+                link_capacity = link_capacity == 0 ? 4 : link_capacity * 2;
+                grown_links = realloc(sql->where_links,
+                                      (size_t)link_capacity * sizeof(*sql->where_links));
+                if (grown_links == NULL) return;
+                sql->where_links = grown_links;
+            }
+
+            link = advance(t);
+            sql->where_links[link_count] = strdup(link);
+            if (sql->where_links[link_count] == NULL) return;
+
+            if (first_link == NULL) {
+                first_link = sql->where_links[link_count];
+            } else if (!ieq(first_link, sql->where_links[link_count])) {
+                same_logic = 0;
+            }
+            link_count++;
+        }
+
+        if (sql->where_count > 1 && first_link != NULL && same_logic) {
+            strncpy(sql->where_logic, first_link, sizeof(sql->where_logic) - 1);
+            sql->where_logic[sizeof(sql->where_logic) - 1] = '\0';
+        }
+        return;
+#if 0
         const char *col = advance(t);   /* 컬럼 이름 (예: age)   */
         const char *op  = advance(t);   /* 연산자  (예: >)       */
         const char *val = advance(t);   /* 값      (예: 20)      */
@@ -326,6 +398,7 @@ static void parse_where(TokenList *t, ParsedSQL *sql) {
         } else {
             break;
         }
+#endif
     }
 }
 

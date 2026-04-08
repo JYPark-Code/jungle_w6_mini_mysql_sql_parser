@@ -108,7 +108,10 @@ void print_json(FILE *out, const ParsedSQL *sql) {
         }
         fputc(']', out);
         /* AND/OR 결합이 있으면 함께. */
-        if (sql->where_logic[0]) {
+        if (sql->where_count > 1 && sql->where_links != NULL) {
+            fprintf(out, ",\"where_links\":");
+            emit_str_array(out, sql->where_links, sql->where_count - 1);
+        } else if (sql->where_logic[0]) {
             fprintf(out, ",\"where_logic\":");
             emit_str(out, sql->where_logic);
         }

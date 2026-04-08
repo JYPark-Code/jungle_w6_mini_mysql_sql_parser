@@ -46,13 +46,12 @@ void execute(ParsedSQL *sql) {
 
         case QUERY_DELETE:
             /* 삭제: WHERE 조건만 storage 에. */
-            storage_delete(sql->table, sql->where, sql->where_count);
+            storage_delete(sql->table, sql);
             break;
 
         case QUERY_UPDATE:
             /* 수정: SET 와 WHERE 둘 다 필요. */
-            storage_update(sql->table, sql->set, sql->set_count,
-                           sql->where, sql->where_count);
+            storage_update(sql->table, sql);
             break;
 
         default:

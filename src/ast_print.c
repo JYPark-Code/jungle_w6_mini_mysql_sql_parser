@@ -82,7 +82,10 @@ void print_ast(FILE *out, const ParsedSQL *sql) {
     /* WHERE 조건들. AND/OR 결합도 함께 표시. */
     if (sql->where_count > 0) {
         fprintf(out, "├─ where (%d", sql->where_count);
-        if (sql->where_logic[0]) fprintf(out, ", %s", sql->where_logic);
+        if (sql->where_count > 1 && sql->where_links != NULL) {
+            fprintf(out, ", links:");
+            for (int i = 0; i + 1 < sql->where_count; i++) fprintf(out, " %s", sql->where_links[i]);
+        } else if (sql->where_logic[0]) fprintf(out, ", %s", sql->where_logic);
         fprintf(out, "):\n");
         for (int i = 0; i < sql->where_count; i++) {
             fprintf(out, "│   • %s %s %s\n",
