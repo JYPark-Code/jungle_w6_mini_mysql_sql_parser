@@ -3,3 +3,7 @@ build/
 *.o
 *.exe
 *.out
+sqlparser
+test_runner
+data/*.csv
+data/*.schema

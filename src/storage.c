@@ -142,6 +142,44 @@ cleanup:
     return status;
 }
 
+/* 입력: 테이블 이름, 파싱된 SELECT 전체 구조체
+ * 동작: SELECT 저장 백엔드가 아직 머지되지 않아 현재는 호출만 받아 둔다
+ * 반환: 미구현 상태이므로 -1 */
+int storage_select(const char *table, ParsedSQL *sql)
+{
+    (void)table;
+    (void)sql;
+    fprintf(stderr, "[storage] SELECT is not implemented yet\n");
+    return -1;
+}
+
+/* 입력: 테이블 이름, SET 절 배열, SET 개수, WHERE 배열, WHERE 개수
+ * 동작: UPDATE 저장 백엔드가 아직 없어 현재는 호출만 받아 둔다
+ * 반환: 미구현 상태이므로 -1 */
+int storage_update(const char *table, SetClause *set, int set_count,
+                   WhereClause *where, int where_count)
+{
+    (void)table;
+    (void)set;
+    (void)set_count;
+    (void)where;
+    (void)where_count;
+    fprintf(stderr, "[storage] UPDATE is not implemented yet\n");
+    return -1;
+}
+
+/* 입력: 테이블 이름, CREATE TABLE의 컬럼 정의 문자열 배열, 개수
+ * 동작: CREATE 저장 백엔드가 아직 없어 현재는 호출만 받아 둔다
+ * 반환: 미구현 상태이므로 -1 */
+int storage_create(const char *table, char **col_defs, int count)
+{
+    (void)table;
+    (void)col_defs;
+    (void)count;
+    fprintf(stderr, "[storage] CREATE is not implemented yet\n");
+    return -1;
+}
+
 /* 입력: 테이블 이름, 값 배열, 값 개수
  * 동작: INSERT 실행 전에 NULL/빈 문자열/개수 오류 같은 기본 입력 오류를 걸러냄
  * 반환: 유효하면 0, 잘못된 입력이면 -1 */
