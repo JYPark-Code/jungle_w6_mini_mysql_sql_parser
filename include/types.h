@@ -79,6 +79,24 @@ typedef struct {
     int  asc;              /* 1 = ASC (오름차순), 0 = DESC (내림차순) */
 } OrderBy;
 
+/* ─── RowSet — Phase 1 신설 ────────────────────────────────────
+ * storage 가 SELECT 결과를 메모리 데이터로 반환하기 위한 컨테이너.
+ *
+ *   1주차: storage_select 가 결과를 stdout 에 print 만 했음 → 다른 코드가
+ *          결과를 받아서 쓸 방법이 없었다.
+ *   Phase 1: storage_select_result 가 RowSet 으로 반환 → 집계 함수,
+ *            JOIN, 향후 subquery 등 모든 데이터 소비자가 활용 가능.
+ *
+ * 메모리 소유권: storage_select_result 가 만든 RowSet 은 호출자가
+ *                rowset_free 로 해제해야 한다.
+ */
+typedef struct {
+    int     row_count;      /* 행 수 */
+    int     col_count;      /* 컬럼 수 */
+    char  **col_names;      /* 컬럼 이름 배열, 길이 = col_count */
+    char ***rows;            /* rows[i][j] = i 번째 행의 j 번째 컬럼 값 (문자열) */
+} RowSet;
+
 /* ─── SET (UPDATE 용) ─────────────────────────────────────────
  * "name = 'bob'" 같은 한 쌍을 표현.
  */
@@ -114,10 +132,26 @@ typedef struct {
     char       **values;
     int          val_count;
 
-    /* WHERE 절 */
+    /* WHERE 절
+     *
+     * Phase 1 변경:
+     *   1주차: 최대 2개 조건 + 단일 결합자 (where_logic 1개로 표현)
+     *   Phase 1: N개 조건 + N-1개 결합자 (where_links 배열)
+     *
+     * 호환성:
+     *   - where_count == 0      : WHERE 없음
+     *   - where_count == 1      : 단일 조건 (결합자 없음, where_links == NULL OK)
+     *   - where_count == 2 이상 : where_links[0..where_count-2] 가 결합자
+     *
+     *   1주차 코드 호환을 위해 where_logic 도 유지 (deprecated). 새 코드는
+     *   where_links 를 우선 사용하고, where_links == NULL 이면 where_logic
+     *   을 모든 결합자로 fallback.
+     */
     WhereClause *where;
-    int          where_count;       /* 0~2 */
-    char         where_logic[8];    /* "AND" 또는 "OR" */
+    int          where_count;       /* 0~N */
+    char         where_logic[8];    /* (deprecated) 1주차 호환: 모든 결합자가 동일할 때 */
+    char       **where_links;       /* Phase 1: N-1 개의 결합자 ("AND" 또는 "OR")
+                                       길이 = where_count - 1, where_count <= 1 이면 NULL */
 
     /* ORDER BY (없으면 NULL) */
     OrderBy     *order_by;
@@ -157,11 +191,36 @@ void       print_format(FILE *out, const ParsedSQL *sql);
 /* executor.c */
 void       execute(ParsedSQL *sql);
 
-/* storage.c — ⚠ 시그니처 변경 금지 (storage.c 주석 참고) */
+/* storage.c — 1주차 시그니처 (Phase 1 에서 일부 변경 예정)
+ *
+ * Phase 1 계획:
+ *   - storage_insert / storage_select / storage_create 는 그대로 유지
+ *   - storage_delete / storage_update 는 ParsedSQL* 받게 변경
+ *     (원우 PR feature/p1-compound-where 에서 본문 + 시그니처 + 호출부 + 테스트
+ *      모두 한 번에 수정)
+ */
 int        storage_insert(const char *table, char **columns, char **values, int count);
 int        storage_select(const char *table, ParsedSQL *sql);
-int        storage_delete(const char *table, WhereClause *where, int where_count);
-int        storage_update(const char *table, SetClause *set, int set_count, WhereClause *where, int where_count);
+int        storage_delete(const char *table, ParsedSQL *sql);
+int        storage_update(const char *table, ParsedSQL *sql);
 int        storage_create(const char *table, char **col_defs, int count);
+
+/* ─── Phase 1 신설 함수 (지용 feature/p1-rowset 에서 본문 구현) ───
+ *
+ * storage_select_result:
+ *   storage_select 와 동일한 입력을 받지만 결과를 RowSet 으로 반환.
+ *   호출자가 rowset_free 로 해제해야 한다.
+ *   집계 함수 (COUNT/SUM/AVG/MIN/MAX) 도 단일 행 RowSet 으로 반환.
+ *
+ * print_rowset:
+ *   RowSet 을 사람이 읽기 좋은 표 형태로 FILE* 에 출력.
+ *   1주차의 storage_select 가 stdout 에 직접 찍던 형태와 동일.
+ *
+ * rowset_free:
+ *   RowSet 과 그 안의 모든 메모리를 재귀 해제. NULL safe.
+ */
+int  storage_select_result(const char *table, ParsedSQL *sql, RowSet **out);
+void print_rowset(FILE *out, const RowSet *rs);
+void rowset_free(RowSet *rs);
 
 #endif /* TYPES_H */

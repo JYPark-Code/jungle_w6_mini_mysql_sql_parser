@@ -1,4 +1,4 @@
-#include "types.h"
+﻿#include "types.h"
 #include <stdio.h>
 
 #define AST_RESET "\x1b[0m"
@@ -19,6 +19,15 @@ static const char *qtype_name(QueryType t) {
         case QUERY_CREATE: return "CREATE";
         default:           return "UNKNOWN";
     }
+}
+
+static const char *where_link_at(const ParsedSQL *sql, int condition_index) {
+    if (!sql || condition_index <= 0) return NULL;
+    if (sql->where_links && sql->where_links[condition_index - 1]) {
+        return sql->where_links[condition_index - 1];
+    }
+    if (sql->where_logic[0]) return sql->where_logic;
+    return NULL;
 }
 
 void print_ast(FILE *out, const ParsedSQL *sql) {
@@ -54,17 +63,22 @@ void print_ast(FILE *out, const ParsedSQL *sql) {
     }
 
     if (sql->where_count > 0) {
-        fprintf(out, TREE_MID "%swhere%s (%s%d%s",
+        fprintf(out, TREE_MID "%swhere%s (%s%d%s):\n",
                 AST_LABEL, AST_RESET, AST_COUNT, sql->where_count, AST_RESET);
-        if (sql->where_logic[0]) {
-            fprintf(out, ", %s", sql->where_logic);
-        }
-        fprintf(out, "):\n");
         for (int i = 0; i < sql->where_count; i++) {
-            fprintf(out, TREE_ITEM "%s %s %s\n",
-                    sql->where[i].column,
-                    sql->where[i].op,
-                    sql->where[i].value);
+            const char *link = where_link_at(sql, i);
+            if (link) {
+                fprintf(out, TREE_ITEM "%s %s %s %s\n",
+                        link,
+                        sql->where[i].column,
+                        sql->where[i].op,
+                        sql->where[i].value);
+            } else {
+                fprintf(out, TREE_ITEM "%s %s %s\n",
+                        sql->where[i].column,
+                        sql->where[i].op,
+                        sql->where[i].value);
+            }
         }
     }
 

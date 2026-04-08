@@ -258,6 +258,13 @@ void free_parsed(ParsedSQL *sql) {
         free(sql->col_defs);
     }
     free(sql->where);     /* WhereClause 배열 (안에 동적 메모리 없음) */
+    /* Phase 1: where_links — N-1 개의 결합자 문자열 배열.
+     * 1주차 parser 는 이 필드를 안 쓰므로 NULL. 향후 N-ary 파서가 strdup 으로
+     * 채울 때 free 가 동작해야 한다. */
+    if (sql->where_links) {
+        for (int i = 0; i + 1 < sql->where_count; i++) free(sql->where_links[i]);
+        free(sql->where_links);
+    }
     free(sql->set);       /* SetClause 배열   (안에 동적 메모리 없음) */
     free(sql->order_by);  /* OrderBy 1개      */
     free(sql);
@@ -286,38 +293,90 @@ static char **parse_ident_list(TokenList *t, int *out_count) {
     return arr;
 }
 
+/* SELECT 컬럼 목록을 읽다가 멈춰야 하는 경계 토큰들.
+ * 정상 종료 지점인 FROM 외에도, 미래의 괄호/서브쿼리 문맥을 위해
+ * 경계 밖 토큰을 컬럼으로 삼키지 않도록 stop set 을 둔다. */
+static int is_select_stop_token(const char *tok) {
+    if (!tok) return 1;
+    return ieq(tok, "FROM")  || ieq(tok, "WHERE") || ieq(tok, "ORDER") ||
+           ieq(tok, "LIMIT") || strcmp(tok, ")") == 0 || strcmp(tok, ";") == 0;
+}
+
 /* ============================================================================
  * 4단계: WHERE 절 파서
- *   "WHERE col op value" 를 1~2개까지 읽고, 사이에 AND/OR 가 있으면 두 개.
+ *   "WHERE col op value [AND/OR col op value]..." 를 N개까지 읽는다.
  * ============================================================================
  */
 
 /* parse_where: 호출 시점에 'WHERE' 키워드는 이미 소비되어 있다고 가정.
  *
- *   WHERE age > 20                    → 조건 1개
- *   WHERE age > 20 AND name = 'bob'   → 조건 2개 + 결합 "AND"
+ *   WHERE age > 20                              → 조건 1개
+ *   WHERE age > 20 AND name = 'bob'             → 조건 2개 + 결합 1개
+ *   WHERE age > 20 AND name = 'bob' OR city = 'Seoul'
+ *                                               → 조건 3개 + 결합 2개
  *
- * 1주차에서는 조건 2개까지만 지원 (실용적으로 충분, 구조 단순). */
+ * Phase 1 에서는 괄호 그룹화 없이 왼쪽에서 오른쪽 순서로 평면 N-ary 구조만 만든다. */
 static void parse_where(TokenList *t, ParsedSQL *sql) {
-    sql->where = calloc(2, sizeof(WhereClause));   /* 최대 2칸 미리 잡기 */
-    sql->where_count = 0;
+    int where_cap = 0;
+    int links_cap = 0;
+    int link_count = 0;
 
-    for (int i = 0; i < 2; i++) {
+    sql->where = NULL;
+    sql->where_count = 0;
+    sql->where_links = NULL;
+    sql->where_logic[0] = '\0';
+
+    while (1) {
         const char *col = advance(t);   /* 컬럼 이름 (예: age)   */
         const char *op  = advance(t);   /* 연산자  (예: >)       */
         const char *val = advance(t);   /* 값      (예: 20)      */
         if (!col || !op || !val) break;
+
+        if (sql->where_count >= where_cap) {
+            where_cap = where_cap ? where_cap * 2 : 4;
+            sql->where = realloc(sql->where, where_cap * sizeof(WhereClause));
+        }
 
         WhereClause *w = &sql->where[sql->where_count++];
         strncpy(w->column, col, sizeof(w->column) - 1);
         strncpy(w->op,     op,  sizeof(w->op) - 1);
         strncpy(w->value,  val, sizeof(w->value) - 1);
 
-        /* 다음 토큰이 AND 나 OR 면 두 번째 조건도 읽으러 간다. */
-        if (peek(t) && (ieq(peek(t), "AND") || ieq(peek(t), "OR"))) {
-            strncpy(sql->where_logic, advance(t), sizeof(sql->where_logic) - 1);
-        } else {
+        /* 다음 토큰이 AND/OR 면 결합자를 저장하고 다음 조건을 계속 읽는다. */
+        if (!peek(t) || (!ieq(peek(t), "AND") && !ieq(peek(t), "OR"))) {
             break;
+        }
+
+        if (link_count >= links_cap) {
+            links_cap = links_cap ? links_cap * 2 : 4;
+            sql->where_links = realloc(sql->where_links, links_cap * sizeof(char *));
+        }
+        {
+            const char *logic = advance(t);
+            sql->where_links[link_count++] = strdup(ieq(logic, "OR") ? "OR" : "AND");
+        }
+    }
+
+    /* 모든 결합자가 동일할 때만 1주차 호환 필드를 채운다. 혼합이면 빈 값 유지. */
+    if (link_count > 0 && link_count != sql->where_count - 1) {
+        free(sql->where_links[--link_count]);
+    }
+
+    if (link_count == 0 && sql->where_links) {
+        free(sql->where_links);
+        sql->where_links = NULL;
+    }
+
+    if (link_count > 0 && sql->where_links) {
+        int same_logic = 1;
+        for (int i = 1; i < link_count; i++) {
+            if (!ieq(sql->where_links[0], sql->where_links[i])) {
+                same_logic = 0;
+                break;
+            }
+        }
+        if (same_logic) {
+            strncpy(sql->where_logic, sql->where_links[0], sizeof(sql->where_logic) - 1);
         }
     }
 }
@@ -410,10 +469,12 @@ static void parse_insert(TokenList *t, ParsedSQL *sql) {
 static void parse_select(TokenList *t, ParsedSQL *sql) {
     sql->type = QUERY_SELECT;
 
-    /* 컬럼 목록 (혹은 *). FROM 이 나오기 전까지가 컬럼 목록. */
+    /* 컬럼 목록 (혹은 *).
+     * FROM 이 정상 종료 지점이고, stop set 은 경계 밖 토큰을 컬럼으로
+     * 잘못 먹지 않도록 막아준다. */
     int cap = 4;
     sql->columns = calloc(cap, sizeof(char *));
-    while (peek(t) && !ieq(peek(t), "FROM")) {
+    while (peek(t) && !is_select_stop_token(peek(t))) {
         if (sql->col_count >= cap) {
             cap *= 2;
             sql->columns = realloc(sql->columns, cap * sizeof(char *));
@@ -432,11 +493,12 @@ static void parse_select(TokenList *t, ParsedSQL *sql) {
         colbuf[pos] = '\0';
 
         /* 다음 토큰이 '(' 면 함수 호출형 (COUNT(*), SUM(x) 등).
-         * 닫는 ')' 까지 모든 토큰을 순서대로 이어붙인다. */
+         * 닫는 ')' 까지 모든 토큰을 순서대로 이어붙인다.
+         * 세미콜론을 만나면 거기서 멈춰 경계 밖 토큰을 먹지 않는다. */
         if (peek(t) && strcmp(peek(t), "(") == 0) {
             advance(t);  /* '(' 소비 */
             if (pos < sizeof(colbuf) - 1) colbuf[pos++] = '(';
-            while (peek(t) && strcmp(peek(t), ")") != 0) {
+            while (peek(t) && strcmp(peek(t), ")") != 0 && strcmp(peek(t), ";") != 0) {
                 const char *inner = advance(t);
                 size_t ilen = strlen(inner);
                 if (pos + ilen >= sizeof(colbuf) - 1) ilen = sizeof(colbuf) - 1 - pos;

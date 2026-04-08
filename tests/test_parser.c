@@ -84,7 +84,37 @@ static void test_where_and(void) {
     ParsedSQL *s = parse_sql("SELECT * FROM users WHERE age > 20 AND name = 'bob'");
     CHECK(s->where_count == 2, "where_count == 2");
     CHECK(strcmp(s->where_logic, "AND") == 0, "logic AND");
+    CHECK(s->where_links != NULL, "where_links allocated");
+    CHECK(strcmp(s->where_links[0], "AND") == 0, "where_links[0] AND");
     CHECK(strcmp(s->where[1].value, "bob") == 0, "second cond value");
+    free_parsed(s);
+}
+
+/* AND로만 이어진 3개 조건을 모두 읽고, 호환용 where_logic도 채우는지 본다. */
+static void test_where_nary_and(void) {
+    SECTION("WHERE AND (3 conditions)");
+    ParsedSQL *s = parse_sql(
+        "SELECT * FROM users WHERE age > 20 AND score >= 80 AND city = 'Seoul'");
+    CHECK(s->where_count == 3, "where_count == 3");
+    CHECK(s->where_links != NULL, "where_links allocated");
+    CHECK(strcmp(s->where_links[0], "AND") == 0, "link[0] AND");
+    CHECK(strcmp(s->where_links[1], "AND") == 0, "link[1] AND");
+    CHECK(strcmp(s->where_logic, "AND") == 0, "uniform AND fallback");
+    CHECK(strcmp(s->where[2].column, "city") == 0, "third cond column");
+    free_parsed(s);
+}
+
+/* AND/OR가 섞인 경우에는 링크 배열만 믿고, 옛 where_logic은 비워 두는지 본다. */
+static void test_where_nary_mixed_logic(void) {
+    SECTION("WHERE mixed logic (3 conditions)");
+    ParsedSQL *s = parse_sql(
+        "SELECT * FROM users WHERE age > 20 AND name = 'bob' OR city = 'Seoul'");
+    CHECK(s->where_count == 3, "where_count == 3");
+    CHECK(s->where_links != NULL, "where_links allocated");
+    CHECK(strcmp(s->where_links[0], "AND") == 0, "link[0] AND");
+    CHECK(strcmp(s->where_links[1], "OR") == 0, "link[1] OR");
+    CHECK(s->where_logic[0] == '\0', "mixed logic leaves deprecated field empty");
+    CHECK(strcmp(s->where[2].value, "Seoul") == 0, "third cond value");
     free_parsed(s);
 }
 
@@ -107,6 +137,29 @@ static void test_update(void) {
     CHECK(strcmp(s->set[0].value, "carol") == 0, "set[0].val");
     CHECK(strcmp(s->set[1].column, "age") == 0, "set[1].col");
     CHECK(s->where_count == 1, "where_count");
+    free_parsed(s);
+}
+
+static void test_delete_mixed_where(void) {
+    SECTION("DELETE mixed WHERE");
+    ParsedSQL *s = parse_sql("DELETE FROM users WHERE a = 1 AND b = 2 OR c = 3");
+    CHECK(s->type == QUERY_DELETE, "type");
+    CHECK(s->where_count == 3, "where_count");
+    CHECK(s->where_links != NULL, "where_links");
+    CHECK(strcmp(s->where_links[0], "AND") == 0, "first link");
+    CHECK(strcmp(s->where_links[1], "OR") == 0, "second link");
+    free_parsed(s);
+}
+
+static void test_update_mixed_where(void) {
+    SECTION("UPDATE mixed WHERE");
+    ParsedSQL *s = parse_sql("UPDATE users SET age = 30 WHERE a = 1 OR b = 2 AND c = 3");
+    CHECK(s->type == QUERY_UPDATE, "type");
+    CHECK(s->set_count == 1, "set_count");
+    CHECK(s->where_count == 3, "where_count");
+    CHECK(s->where_links != NULL, "where_links");
+    CHECK(strcmp(s->where_links[0], "OR") == 0, "first link");
+    CHECK(strcmp(s->where_links[1], "AND") == 0, "second link");
     free_parsed(s);
 }
 
@@ -150,6 +203,31 @@ static void test_select_function_with_arg(void) {
     ParsedSQL *s = parse_sql("SELECT SUM(price) FROM orders");
     CHECK(s->col_count == 1, "1 column");
     CHECK(strcmp(s->columns[0], "SUM(price)") == 0, "SUM(price) 한 컬럼");
+    free_parsed(s);
+}
+
+/* COUNT(*) 에서 쓰던 함수 호출형 컬럼 결합이 다른 집계 함수에도 그대로
+ * 적용되는지 확인한다. */
+static void test_select_aggregate_variants(void) {
+    SECTION("SELECT aggregate variants");
+    ParsedSQL *s = parse_sql(
+        "SELECT SUM(price), AVG(age), MIN(joined), MAX(score) FROM orders");
+    CHECK(s->col_count == 4, "4 aggregate columns");
+    CHECK(strcmp(s->columns[0], "SUM(price)") == 0, "SUM(price)");
+    CHECK(strcmp(s->columns[1], "AVG(age)") == 0, "AVG(age)");
+    CHECK(strcmp(s->columns[2], "MIN(joined)") == 0, "MIN(joined)");
+    CHECK(strcmp(s->columns[3], "MAX(score)") == 0, "MAX(score)");
+    CHECK(strcmp(s->table, "orders") == 0, "table orders");
+    free_parsed(s);
+}
+
+/* 세미콜론 같은 stop set 이 컬럼 목록 뒤에 나와도 가짜 컬럼으로
+ * 잘못 추가되지 않는지 확인한다. */
+static void test_select_stop_set_semicolon(void) {
+    SECTION("SELECT stop set blocks semicolon as column");
+    ParsedSQL *s = parse_sql("SELECT SUM(price), ;");
+    CHECK(s->col_count == 1, "semicolon not parsed as phantom column");
+    CHECK(strcmp(s->columns[0], "SUM(price)") == 0, "aggregate column kept");
     free_parsed(s);
 }
 
@@ -228,6 +306,19 @@ static void test_select_or_where(void) {
     ParsedSQL *s = parse_sql("SELECT * FROM users WHERE age < 20 OR age > 60");
     CHECK(s->where_count == 2,              "2 conditions");
     CHECK(strcmp(s->where_logic, "OR") == 0,"OR logic");
+    CHECK(s->where_links != NULL,            "where_links allocated");
+    CHECK(strcmp(s->where_links[0], "OR") == 0, "where_links[0] OR");
+    free_parsed(s);
+}
+
+static void test_where_mixed_links(void) {
+    SECTION("WHERE mixed AND/OR links");
+    ParsedSQL *s = parse_sql("SELECT * FROM users WHERE a = 1 AND b = 2 OR c = 3");
+    CHECK(s->where_count == 3, "where_count == 3");
+    CHECK(s->where_links != NULL, "where_links allocated");
+    CHECK(strcmp(s->where_links[0], "AND") == 0, "first link AND");
+    CHECK(strcmp(s->where_links[1], "OR") == 0, "second link OR");
+    CHECK(s->where_logic[0] == '\0', "mixed links clear fallback logic");
     free_parsed(s);
 }
 
@@ -259,6 +350,7 @@ static void test_sql_line_comment(void) {
 
 /* ─── AST 출력 (print_ast) 테스트 ─────────────────────────── */
 
+/* AST 출력 결과를 메모리 버퍼로 받아서 문자열 단위로 검증한다. */
 static char *capture_ast(const char *sql_text) {
     ParsedSQL *sql = parse_sql(sql_text);
     char  *buf = NULL;
@@ -289,6 +381,18 @@ static void test_ast_select(void) {
     CHECK(strstr(s, "age > 20")             != NULL, "where rendered");
     CHECK(strstr(s, "order_by: name DESC")  != NULL, "order_by DESC");
     CHECK(strstr(s, "limit: 5")             != NULL, "limit 5");
+    free(s);
+}
+
+/* AST 출력이 혼합 AND/OR 링크를 조건 순서대로 보여주는지 확인한다.
+ * (석제 ast_print 채택 — 각 조건 옆에 결합자 inline) */
+static void test_ast_where_mixed_links(void) {
+    SECTION("AST: WHERE mixed links");
+    char *s = capture_ast(
+        "SELECT * FROM users WHERE age > 20 AND name = 'bob' OR city = 'Seoul'");
+    CHECK(strstr(s, "• age > 20")          != NULL, "first condition");
+    CHECK(strstr(s, "• AND name = bob")    != NULL, "AND rendered inline");
+    CHECK(strstr(s, "• OR city = Seoul")   != NULL, "OR rendered inline");
     free(s);
 }
 
@@ -432,6 +536,7 @@ static void test_tokens_comment_inline(void) {
 
 /* ─── JSON 출력 (print_json) 테스트 ──────────────────────── */
 
+/* JSON 출력 결과를 문자열로 캡처해 필요한 필드가 들어 있는지 확인한다. */
 static char *capture_json(const char *sql_text) {
     ParsedSQL *sql = parse_sql(sql_text);
     char  *buf = NULL;
@@ -478,10 +583,19 @@ static void test_json_insert(void) {
 static void test_json_where_and(void) {
     SECTION("JSON: WHERE AND (2 conditions)");
     char *s = capture_json("SELECT * FROM t WHERE a = 1 AND b = 2");
-    CHECK(strstr(s, "\"where_logic\":\"AND\"") != NULL, "where_logic AND");
+    CHECK(strstr(s, "\"where_links\":[\"AND\"]") != NULL, "where_links AND");
+    /* json_out: 원우 채택 (else if) — where_links 와 where_logic 둘 중 하나만 출력 */
     int commas = 0;
     for (char *p = s; *p; p++) if (*p == '{') commas++;
     CHECK(commas >= 3, "outer + 2 where objects = 3 braces");  /* root + 2 conds */
+    free(s);
+}
+
+static void test_json_where_links(void) {
+    SECTION("JSON: WHERE mixed links");
+    char *s = capture_json("SELECT * FROM t WHERE a = 1 AND b = 2 OR c = 3");
+    CHECK(strstr(s, "\"where_links\":[\"AND\",\"OR\"]") != NULL, "where_links array");
+    CHECK(strstr(s, "\"where_logic\"") == NULL, "mixed links skip fallback logic");
     free(s);
 }
 
@@ -507,6 +621,7 @@ static void test_json_null_safe(void) {
 
 /* ─── --format SQL 정규화 직렬화 테스트 ──────────────────── */
 
+/* format 출력 결과를 다시 문자열로 받아 round-trip 검증에 사용한다. */
 static char *capture_format(const char *sql_text) {
     ParsedSQL *sql = parse_sql(sql_text);
     char  *buf = NULL;
@@ -545,6 +660,16 @@ static void test_format_select_full(void) {
     free(s);
 }
 
+/* format 출력이 혼합 AND/OR 순서를 그대로 되살리는지 확인한다. */
+static void test_format_where_mixed_links(void) {
+    SECTION("FORMAT: WHERE mixed links");
+    char *s = capture_format(
+        "select * from users where age > 20 and name = 'bob' or city = 'Seoul'");
+    CHECK(strstr(s, "WHERE age > 20 AND name = 'bob' OR city = 'Seoul'") != NULL,
+          "mixed links preserved");
+    free(s);
+}
+
 static void test_format_delete(void) {
     SECTION("FORMAT: DELETE");
     char *s = capture_format("delete from t where id = 1");
@@ -557,6 +682,13 @@ static void test_format_update(void) {
     char *s = capture_format("update t set name = 'bob', age = 30 where id = 1");
     CHECK(strstr(s, "UPDATE t SET name = 'bob', age = 30 WHERE id = 1;") != NULL,
           "정규화된 UPDATE");
+    free(s);
+}
+
+static void test_format_mixed_where(void) {
+    SECTION("FORMAT: mixed WHERE links");
+    char *s = capture_format("select * from t where a = 1 and b = 2 or c = 3");
+    CHECK(strstr(s, "WHERE a = 1 AND b = 2 OR c = 3") != NULL, "mixed WHERE preserved");
     free(s);
 }
 
@@ -586,13 +718,19 @@ int main(void) {
     test_select_star();
     test_select_where_order_limit();
     test_where_and();
+    test_where_nary_and();
+    test_where_nary_mixed_logic();
     test_delete();
     test_update();
+    test_delete_mixed_where();
+    test_update_mixed_where();
     test_free_null();
     test_select_count_star();
     test_select_count_star_spaced();
     test_select_count_with_where();
     test_select_function_with_arg();
+    test_select_aggregate_variants();
+    test_select_stop_set_semicolon();
     test_empty_input();
     test_unknown_keyword();
     test_case_insensitive();
@@ -601,11 +739,13 @@ int main(void) {
     test_where_operators();
     test_trailing_whitespace();
     test_select_or_where();
+    test_where_mixed_links();
     test_order_by_asc_explicit();
     test_sql_line_comment();
 
     test_ast_create();
     test_ast_select();
+    test_ast_where_mixed_links();
     test_ast_insert();
     test_ast_null_safe();
 
@@ -626,14 +766,17 @@ int main(void) {
     test_json_select();
     test_json_insert();
     test_json_where_and();
+    test_json_where_links();
     test_json_escape();
     test_json_null_safe();
 
     test_format_create();
     test_format_insert();
     test_format_select_full();
+    test_format_where_mixed_links();
     test_format_delete();
     test_format_update();
+    test_format_mixed_where();
     test_format_round_trip();
     test_format_null_safe();
 
@@ -641,6 +784,3 @@ int main(void) {
     if (run_executor_tests() != 0) return 1;
     return g_fail == 0 ? 0 : 1;
 }
-
-
-

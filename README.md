@@ -4,7 +4,7 @@
 > CREATE / INSERT / SELECT / UPDATE / DELETE 를 직접 파싱·실행하고,
 > Python 서버 + HTML 뷰어까지 한 번에 묶었다.
 
-[![CI](https://img.shields.io/badge/build-passing-brightgreen)]() [![tests](https://img.shields.io/badge/tests-201%20passed-brightgreen)]() [![valgrind](https://img.shields.io/badge/leaks-0-brightgreen)]() [![lang](https://img.shields.io/badge/lang-C-blue)]()
+[![CI](https://img.shields.io/badge/build-passing-brightgreen)]() [![tests](https://img.shields.io/badge/tests-227%20passed-brightgreen)]() [![valgrind](https://img.shields.io/badge/leaks-0-brightgreen)]() [![lang](https://img.shields.io/badge/lang-C-blue)]()
 
 ---
 
@@ -22,7 +22,7 @@
 
 ```bash
 make                     # 빌드
-make test                # 201 단위 테스트
+make test                # 227 단위 테스트
 ./sqlparser query.sql    # CLI 실행
 python3 server.py        # 브라우저 뷰어 (http://localhost:8000)
 ```
@@ -38,14 +38,16 @@ python3 server.py        # 브라우저 뷰어 (http://localhost:8000)
 | `SELECT` | `SELECT id, name FROM users WHERE age > 20 ORDER BY name DESC LIMIT 5;` |
 | `UPDATE` | `UPDATE users SET age = 26 WHERE id = 1;` |
 | `DELETE` | `DELETE FROM users WHERE id = 2;` |
-| 집계 | `SELECT COUNT(*) FROM users;` |
-| 패턴 | `SELECT * FROM users WHERE name LIKE 'A%';` |
+| **N-ary WHERE** | `SELECT * FROM users WHERE age > 24 AND city = 'Seoul' AND age < 32;` |
+| **혼합 결합** | `DELETE FROM users WHERE city = 'Busan' OR age < 25 AND id > 1;` |
+| **집계 함수 5종** | `SELECT COUNT(*) FROM users;` `SELECT SUM(age) FROM users;` `SELECT AVG(price) FROM orders;` `SELECT MIN(joined) FROM users;` `SELECT MAX(name) FROM users;` |
+| 패턴 매칭 | `SELECT * FROM users WHERE name LIKE 'A%';` |
 | 라인 주석 | `-- 이건 무시됨` |
 
 **컬럼 타입 6종:** `INT`, `VARCHAR`, `FLOAT`, `BOOLEAN`, `DATE` (`'YYYY-MM-DD'`), `DATETIME`
 
 **WHERE 연산자:** `=`, `!=`, `>`, `<`, `>=`, `<=`, `LIKE` (`%`, `_`)
-1~2 조건 + `AND` / `OR` 결합 지원.
+**N개 조건** + `AND` / `OR` 자유 혼합 결합 (왼→오 평가, 그룹화는 미지원).
 
 ---
 
@@ -111,9 +113,9 @@ flowchart LR
 
 ### 인터페이스 계약 (storage.c)
 
-`include/types.h` 의 `storage_*` 함수 시그니처는 **절대 변경 금지**.
+`include/types.h` 의 `storage_*` 함수 시그니처는 **절대 변경 금지** (의도된 갱신 외).
 호출부 (`executor.c`) 는 storage 의 내부 구조를 알면 안 된다 (캡슐화).
-2주차에 내부를 B+트리/해시 인덱스로 교체해도 호출부는 영향받지 않는 설계.
+이 원칙 덕분에 1차 완성 후 후속 작업에서 시그니처를 안전하게 갱신할 수 있었다 ([아래](#-하루-안에--1차-완성--후속-리팩토링) 참고).
 
 ---
 
@@ -159,21 +161,135 @@ sql_parser/
 
 | 항목 | 값 |
 |---|---|
-| 단위 테스트 | **201 passed / 0 failed** |
+| 단위 테스트 | **227 passed / 0 failed** (1차 201 + 후속 +26) |
 | 빌드 경고 | **0** (`-Wall -Wextra -Wpedantic`) |
-| Valgrind 누수 | **0** (sqlparser, test_runner, test_storage_*) |
-| GitHub Actions CI | ✅ 모든 push/PR 자동 검증 |
+| Valgrind 누수 | **0** (sqlparser + test_runner + test_storage_* 5 바이너리) |
+| GitHub Actions CI | ✅ 모든 push/PR (main/dev/dev2) 자동 검증 |
 | 자동 QA 케이스 | **47 / 47 통과** ([QA_REPORT_AUTO.md](docs/QA_REPORT_AUTO.md)) |
 
 ### 테스트 커버리지
 
 - 5 종 쿼리 (CREATE/INSERT/SELECT/DELETE/UPDATE)
 - 6 종 ColumnType (INT/VARCHAR/FLOAT/BOOLEAN/DATE/DATETIME)
-- WHERE 6 연산자 + AND/OR + LIKE 패턴 (`%`, `_`)
+- WHERE 6 연산자 + N-ary AND/OR 혼합 결합 + LIKE 패턴
 - ORDER BY ASC/DESC, LIMIT (0, 음수, 초과 모두)
-- COUNT(*), 빈 결과, 빈 테이블, 1000건 처리
+- 집계 함수 5종 (COUNT/SUM/AVG/MIN/MAX), 타입 검증, 빈 결과, 1000건 처리
 - AST/JSON/format 출력 round-trip 검증
 - 토크나이저 엣지 (음수, float, 따옴표, DATE, 빈 따옴표, 라인 주석)
+- RowSet API 직접 검증 (in-memory 결과)
+
+---
+
+## 📈 하루 안에 — 1차 완성 → 후속 리팩토링
+
+이 프로젝트는 **하루 만에** 두 단계로 만들어졌다.
+오전에 1차 완성을 끝낸 다음, 사용/리뷰 과정에서 발견한 한계를
+오후에 같은 팀이 후속 리팩토링으로 정리.
+
+### 🅰 1차 완성 (오전 ~ 점심)
+
+**니즈:** "4 분 발표를 위해 5 종 SQL 을 안전하게 파싱·실행하고, CLI / 브라우저 양쪽에서 시연 가능한 결과물."
+
+**구현 결과:**
+- `parser.c` — 토크나이저 + 재귀 하강 파서, 5 종 쿼리, COUNT(*), LIKE
+- `storage.c` — 파일 기반 백엔드 (CSV + .schema)
+- `executor.c` — `ParsedSQL` 디스패처
+- CLI 6 플래그 (`--debug` / `--json` / `--tokens` / `--format` / `--help` / `--version`)
+- `server.py` (Python stdlib) + `index.html` (CodeMirror, Cards/JSON 토글, 다크 테마)
+- GitHub Actions CI + PR 템플릿 + 브랜치 보호
+- **201 단위 테스트, valgrind 누수 0**
+- 발표 안정 상태로 `main` 머지 완료
+
+### 🅱 사용/리뷰에서 발견된 한계
+
+1차 완성 후 코드를 들여다보면서 드러난 약점:
+
+| 발견 | 원인 |
+|---|---|
+| **`storage_select` 가 결과를 stdout 에만 print** | 다른 함수가 결과를 받아 쓸 수 없음 → JOIN/집계/subquery 모두 불가능 |
+| **WHERE 가 1~2 조건 + 단일 결합자만** | `WHERE a=1 AND b=2 AND c=3` 같은 N개 조건 미지원 |
+| **`storage_delete` / `storage_update` 시그니처 불일치** | SELECT 는 `ParsedSQL*` 받는데, DELETE/UPDATE 는 `WhereClause*` + count 따로 받음 → API 비대칭 + N-ary 결합자 전달 불가 |
+| **집계 함수가 COUNT(*) 한 종류만** | SUM/AVG/MIN/MAX 미지원 |
+| **silent error 다수** | "존재하지 않는 테이블 SELECT" 등이 에러 메시지 없이 빈 결과 |
+| **server.py 가 `--json` 출력에서 `{"raw": ...}` 객체 다수** | storage 가 `--json` 모드에서도 표를 stdout 에 같이 찍어 JSON stream 오염 |
+
+### 🅲 후속 리팩토링 (점심 ~ 오후)
+
+같은 팀 3 명이 영역을 나눠서 한 번 더 작업.
+**1차 완성을 보존**하기 위해 새 통합 브랜치 `dev2` 에서 진행 (main 은 발표용 안정 상태 그대로).
+
+| # | 작업 | 담당 | 핵심 변경 |
+|---|---|---|---|
+| **MP1** | 인터페이스 계약 갱신 | 지용 | `RowSet` 구조체 + `where_links` 배열 + 새 함수 선언 (`storage_select_result` / `print_rowset` / `rowset_free`) |
+| **A** | RowSet 인프라 + 집계 함수 5종 | 지용 | `storage_select_result()` 가 결과를 메모리 RowSet 으로 반환. SUM/AVG/MIN/MAX 신설. `storage_select` 는 얇은 wrapper 로. silent error 6곳에 친절 메시지 |
+| **B** | Parser N-ary WHERE + stop set | 석제 | `parse_where` 가 N개 조건 + 결합자 배열 (`where_links`) 지원. `parse_select` 에 stop set (`)`, `;` 등) 도입 — 미래 subquery/괄호 대비 |
+| **C** | UPDATE/DELETE 시그니처 통일 | 원우 | `storage_delete(table, ParsedSQL*)` / `storage_update(table, ParsedSQL*)` 로 SELECT 와 동일 패턴. 본문에서 N-ary 결합자 평가 |
+
+### 추가/변경 요약
+
+**새 인터페이스:**
+```c
+/* Phase 1 신설 */
+typedef struct {
+    int     row_count;
+    int     col_count;
+    char  **col_names;
+    char ***rows;
+} RowSet;
+
+int  storage_select_result(const char *table, ParsedSQL *sql, RowSet **out);
+void print_rowset(FILE *out, const RowSet *rs);
+void rowset_free(RowSet *rs);
+
+/* 시그니처 통일 (1주차 → 후속) */
+int storage_delete(const char *table, ParsedSQL *sql);
+int storage_update(const char *table, ParsedSQL *sql);
+
+/* ParsedSQL 확장 */
+char **where_links;   /* N-1 개 결합자 ("AND"/"OR"), 1주차 호환 fallback 유지 */
+```
+
+**새 SQL:**
+```sql
+-- 집계 함수 5종 (1주차에는 COUNT(*) 만)
+SELECT SUM(age)  FROM users;
+SELECT AVG(price) FROM orders;
+SELECT MIN(joined) FROM users;
+SELECT MAX(name)  FROM users;
+
+-- N-ary WHERE (1주차에는 1~2 조건만)
+SELECT * FROM users WHERE age > 24 AND city = 'Seoul' AND age < 32;
+DELETE FROM users WHERE city = 'Busan' OR age < 25 AND id > 1;
+UPDATE users SET city = 'Jeju' WHERE age > 30 AND name = 'bob';
+```
+
+**친절한 에러 메시지 (silent error → stderr):**
+- 존재하지 않는 테이블 / SELECT 컬럼 / WHERE 컬럼
+- 빈 테이블에서도 WHERE 컬럼 오타 사전 검증
+- SUM/AVG 타입 mismatch / 집계 컬럼 없음
+
+### 변화의 핵심 가치
+
+**데이터 / 표시 분리.** 1주차의 storage 는 결과를 화면에 출력만 하는 "프린터"였다.
+후속 리팩토링으로 **데이터 반환 함수**가 생기면서, 향후 JOIN / 집계 GROUP BY / subquery 모든 길이 열렸다.
+
+**인터페이스 일관성.** SELECT / DELETE / UPDATE 모두 `ParsedSQL*` 한 인자로 통일.
+호출부가 깔끔해지고, N-ary 결합자 같은 새 필드가 자연스럽게 흘러간다.
+
+**1주차 호환 0 회귀.** 후속 리팩토링 후에도 1주차 단위 테스트 (201개) 가 모두 통과.
+시그니처가 바뀐 두 함수만 호출 인자 갱신, 본문 동작은 동일.
+
+### 결과
+
+| 지표 | 1차 완성 | 후속 리팩토링 후 |
+|---|---|---|
+| 단위 테스트 | 201 | **227** (+30 RowSet/집계, +나머지) |
+| 빌드 경고 | 0 | **0** |
+| valgrind 누수 | 0 | **0** (5 바이너리 모두) |
+| storage 함수 | 5 | **8** (+ 3 RowSet 신설) |
+| WHERE 조건 수 | 최대 2 | **N개** (혼합 결합) |
+| 집계 함수 | 1 (COUNT) | **5** (COUNT/SUM/AVG/MIN/MAX) |
+| 에러 메시지 친절도 | 부분적 | **대부분 케이스 stderr** |
 
 ---
 
@@ -189,12 +305,14 @@ sql_parser/
 ```yaml
 - gcc/make/valgrind 설치
 - make CFLAGS="-Werror"           # 경고도 빌드 실패 처리
-- make test                        # 201 단위 테스트
+- make test                        # 단위 테스트 (227)
 - valgrind --leak-check=full ./test_runner
 - valgrind --leak-check=full ./sqlparser query.sql
 ```
 
-→ PR 페이지에 빨간/초록 자동 표시. **MP2 의 B vs C 경쟁 평가 객관화** 에 결정적이었다.
+→ PR 페이지에 빨간/초록 자동 표시.
+**1차 완성** 의 B vs C 경쟁 평가 객관화 + **후속 리팩토링** 의 회귀 검증 모두 결정적.
+(후속 작업 시작 시 dev2 trigger 누락을 발견해 한 줄 fix 했다.)
 
 ## 병렬 개발 — 영역 격리
 
@@ -243,33 +361,77 @@ feature/<본인>  →  PR + CI green  →  PM 리뷰  →  dev  →  PR  →  ma
 
 - **`main` / `dev`** 는 브랜치 보호 (직접 push 차단, admin 만 우회)
 - 모든 PR 은 `.github/pull_request_template.md` 양식 자동 적용
-- B vs C 경쟁 평가는 동일 양식 → 객관 비교
+- 모든 PR 은 CI 자동 검증 + PM 코드 리뷰 후 머지
 
-## B vs C 경쟁 평가 (실제 사례)
+## 1차 완성 — 석제 · 원우 PR 결과
 
-INSERT/DELETE/UPDATE 구현은 두 명이 경쟁:
+두 분이 storage 영역을 나눠서 구현했고, 모두 인터페이스 계약을 지키며 성공적으로 머지됐습니다.
 
-| 기준 | B (원우) | C (세인) |
-|---|---|---|
-| 빌드 무경고 | ✅ | ✅ |
-| 단위 테스트 수 | **48 개** | 0 개 |
-| INSERT/DELETE/UPDATE 구현 | ✅ 실구현 | stub |
-| NULL/에러 가드 | 145 곳 | — |
-| 인터페이스 계약 준수 | ✅ | — |
+### 석제 — SELECT 영역 (PR #18, #22)
 
-→ **B (원우) 채택**. 4-0 압승. 객관 데이터 기반 결정.
-
-## 1주차 합산
-
-| 항목 | 값 |
+| 항목 | 결과 |
 |---|---|
-| Pull Request 수 | 24 |
-| 머지된 commit | 60+ |
-| C 소스 라인 | 약 5000 |
-| 단위 테스트 | 201 |
-| CI 실행 시간 | 평균 25초 |
-| 충돌 발생 머지 | 1건 (PR #20 → #23 재작업) |
-| 작업 손실 사고 | 1건 (PR #21, 학습 사례) |
+| 담당 | `storage_select`, `storage_create`, CSV 파서, WHERE/LIKE/ORDER BY |
+| 단위 테스트 | 3 (executor 통합 테스트) |
+| 핵심 구현 | RFC 4180 호환 CSV 파서, LIKE 패턴 매칭 (`%`, `_`), 타입별 비교 |
+| 부가 작업 | `.gitattributes` LF 통일, 크로스 플랫폼 mkdir |
+| 인터페이스 계약 | ✅ types.h/parser.c/main.c 변경 0 |
+
+### 원우 — INSERT/DELETE/UPDATE 영역 (PR #23)
+
+| 항목 | 결과 |
+|---|---|
+| 담당 | `storage_insert`, `storage_delete`, `storage_update` + 헬퍼 |
+| 단위 테스트 | **48** (insert 10 + delete 18 + update 20) |
+| 핵심 구현 | 타입 검증, NULL 가드 145곳, CSV 이스케이프 |
+| 부가 작업 | Makefile 에 새 테스트 빌드 룰 통합 |
+| 인터페이스 계약 | ✅ types.h/parser.c/main.c/executor.c 변경 0 |
+
+두 PR 모두 GitHub Actions CI 자동 검증 + 코드 리뷰 + valgrind 누수 0 을 통과한 뒤 머지되었습니다.
+
+## 후속 리팩토링 — 옵션 B Mixed Merge 사례 ⭐
+
+후속 작업 (`dev2`) 에서 두 명이 같은 영역을 동시에 작업한 케이스가 있었다.
+원우님이 N-ary WHERE 평가를 검증하기 위해 parser 까지 만들었고, 그 사이 석제님도
+같은 parser N-ary 를 본인 영역에서 작업.
+
+**평범한 머지 패턴 (한 명만 채택)** 대신 **함수 단위 비교 후 베스트 통합** 을 시도:
+
+```
+원우 PR #32 머지 → dev2 에 원우 N-ary 구현
+       ↓
+석제 PR #33 들어옴 → CONFLICT 5 곳 (parser/ast/json/format/test)
+       ↓
+함수별로 두 구현 옆으로 비교:
+  parse_where:        석제 (단일 while, 결합자 정규화, 깔끔)
+  parse_select stop:  석제 (신규 기능, 원우 없음)
+  ast_print:          석제 (inline 결합자 직관적)
+  json_out:           원우 (emit_str_array 헬퍼 재사용)
+  sql_format:         원우 (NULL 안 반환, robust)
+  test_parser.c:      두 사람 케이스 합집합
+       ↓
+mixed merge commit (양쪽 Co-Authored-By)
+       ↓
+PR #33 머지
+```
+
+이 패턴의 가치:
+- **두 사람 작업 모두 살아남음** — 1주차 PR #20 vs #21 처럼 "한 명 채택, 한 명 탈락" 이 아님
+- **결과 코드 품질 ↑** — 각 함수마다 더 나은 쪽 채택
+- **학습 효과** — 두 구현을 옆으로 비교하면서 패턴 학습
+
+## 합산 통계
+
+| 항목 | 1차 완성 | 후속 리팩토링 후 |
+|---|---|---|
+| Pull Request 수 | 24 | **34** (+10) |
+| 머지된 commit | 60+ | **80+** |
+| C 소스 라인 | ~5000 | **~6500** |
+| 단위 테스트 | 201 | **227** |
+| CI 실행 시간 | 25 초 | **30 초** |
+| Valgrind 누수 | 0 | **0** |
+| 작업자 | 4 명 | 3 명 (1차 완성 + 후속) |
+| 작업 기간 | 약 7 시간 | **+ 약 4 시간 (같은 날)** |
 
 ---
 
@@ -280,7 +442,7 @@ INSERT/DELETE/UPDATE 구현은 두 명이 경쟁:
 ```
 
 1. `make` 빌드 (무경고)
-2. `make test` — 201 통과
+2. `make test` — 227 통과
 3. `./sqlparser query.sql --debug` — AST 트리 + 실행 결과
 4. `python3 server.py` — 브라우저에서 `http://localhost:8000`
 

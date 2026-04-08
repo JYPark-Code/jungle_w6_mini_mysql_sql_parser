@@ -34,9 +34,8 @@ typedef struct {
 } StorageRowBuffer;
 
 static int validate_insert_input(const char *table, char **values, int count);
-static int validate_delete_input(const char *table, WhereClause *where, int where_count);
-static int validate_update_input(const char *table, SetClause *set, int set_count,
-                                 WhereClause *where, int where_count);
+static int validate_delete_input(const char *table, const ParsedSQL *sql);
+static int validate_update_input(const char *table, const ParsedSQL *sql);
 static int build_schema_path(const char *table, char *out, size_t size);
 static int build_table_path(const char *table, char *out, size_t size);
 static int build_temp_path(const char *table, char *out, size_t size);
@@ -49,29 +48,24 @@ static int append_csv_row(const char *table_path, char **row, int row_count);
 static int write_csv_row(FILE *fp, char **row, int row_count);
 static int write_csv_field(FILE *fp, const char *value);
 static int validate_delete_clause(const ColDef *schema, int schema_count,
-                                  WhereClause *where, int where_count,
-                                  int *out_where_index);
+                                  const ParsedSQL *sql);
 static int validate_update_set_clause(const ColDef *schema, int schema_count,
                                       SetClause *set, int set_count,
                                       int **out_set_indexes);
 static int delete_rows_from_table(const char *table_path, const char *temp_path,
                                   const ColDef *schema, int schema_count,
-                                  WhereClause *where, int where_count,
-                                  int where_index);
+                                  const ParsedSQL *sql);
 static int update_rows_from_table(const char *table_path, const char *temp_path,
                                   const ColDef *schema, int schema_count,
-                                  SetClause *set, int set_count,
-                                  const int *set_indexes,
-                                  WhereClause *where, int where_count,
-                                  int where_index);
+                                  const ParsedSQL *sql, const int *set_indexes);
 static int read_csv_record(FILE *fp, char **out_record);
 static int parse_csv_record(const char *record, char ***out_fields, int *out_count);
 static int append_char(char **buffer, size_t *len, size_t *cap, char ch);
 static int push_field(char ***fields, int *field_count,
                       char **field_buffer, size_t *field_len, size_t *field_cap);
-static int row_matches_delete(const ColDef *schema, char **row, int row_count,
-                              WhereClause *where, int where_count,
-                              int where_index, int *out_match);
+static int row_matches_delete(const ColDef *schema, int schema_count,
+                              char **row, int row_count,
+                              const ParsedSQL *sql, int *out_match);
 static int apply_update_to_row(char **row, int row_count,
                                SetClause *set, int set_count,
                                const int *set_indexes);
@@ -95,7 +89,7 @@ static void free_row_buffer(StorageRowBuffer *buffer, int free_cells);
 static char *dup_string(const char *src);
 static char *trim_whitespace(char *text);
 static int equals_ignore_case(const char *left, const char *right);
-static int normalized_equals_ignore_case(const char *left, const char *right);
+/* normalized_equals_ignore_case ??Phase 1 ?먯꽌 ?쒓굅??(1二쇱감 is_count_star 媛 ?쇱쓬) */
 static int parse_column_type(const char *text, ColumnType *out_type);
 static void strip_optional_quotes(const char *input, char *output, size_t output_size);
 static int ensure_directory_exists(const char *path);
@@ -108,6 +102,7 @@ static int append_row_buffer(StorageRowBuffer *buffer, char **row);
 static int evaluate_select_clause(const ColDef *schema, int schema_count,
                                   char **row, int row_count,
                                   const WhereClause *clause, int *matched);
+static const char *resolve_where_link(const ParsedSQL *sql, int index);
 static int row_matches_select(const ParsedSQL *sql, const ColDef *schema, int schema_count,
                               char **row, int row_count, int *matched);
 static int collect_matching_rows(const ParsedSQL *sql, const ColDef *schema, int schema_count,
@@ -117,11 +112,26 @@ static int compare_rows_for_order(const ColDef *schema, int order_index, char **
 static int sort_selection(const ParsedSQL *sql, const ColDef *schema, int schema_count,
                           StorageRowBuffer *selection);
 static int is_select_all(const ParsedSQL *sql);
-static int is_count_star(const ParsedSQL *sql);
 static int resolve_selected_columns(const ParsedSQL *sql, const ColDef *schema, int schema_count,
                                     int **indices_out, int *count_out);
-static int print_selection(const ParsedSQL *sql, const ColDef *schema, int schema_count,
-                           const StorageRowBuffer *selection);
+
+/* ??? Phase 1: RowSet ?명봽????????????????????????????????????
+ *
+ * storage_select_result 媛 SELECT 寃곌낵瑜?硫붾え由?RowSet ?쇰줈 ?⑦궎吏뺥빐
+ * 諛섑솚?쒕떎. 湲곗〈 storage_select ?????⑥닔??寃곌낵瑜?print_rowset ?쇰줈
+ * 異쒕젰?섎뒗 ?뉗? wrapper 媛 ?쒕떎 (?몃? ?숈옉 蹂??0).
+ *
+ * ?먰븳 吏묎퀎 ?⑥닔 (COUNT/SUM/AVG/MIN/MAX) ???⑥씪 ??RowSet ?쇰줈 諛섑솚?쒕떎.
+ */
+static int build_rowset_from_selection(const ParsedSQL *sql, const ColDef *schema, int schema_count,
+                                       const StorageRowBuffer *selection, RowSet **out);
+static int build_rowset_for_aggregate(const ParsedSQL *sql, const ColDef *schema, int schema_count,
+                                      const StorageRowBuffer *selection, RowSet **out);
+static int parse_aggregate_call(const char *col_name, char *fn_out, size_t fn_size,
+                                char *arg_out, size_t arg_size);
+static int evaluate_aggregate(const char *fn, int col_index, ColumnType type,
+                              const StorageRowBuffer *selection, char *out, size_t out_size);
+static int rowset_alloc(RowSet **out, int row_count, int col_count);
 
 /* ?낅젰: ?뚯씠釉??대쫫, optional 而щ읆 紐⑸줉, 媛?紐⑸줉, 媛?媛쒖닔
  * ?숈옉: schema瑜??쎌뼱 INSERT 媛믪쓣 schema ?쒖꽌??row濡??뺣젹????CSV??append
@@ -164,19 +174,17 @@ cleanup:
 }
 
 /* ?낅젰: ?뚯씠釉??대쫫, optional WHERE 諛곗뿴, WHERE 媛쒖닔
- * ?숈옉: schema? WHERE瑜?寃利앺븳 ??議곌굔??留욌뒗 row瑜??쒖쇅?섍퀬 ?뚯씠釉??뚯씪 ?꾩껜瑜??ъ옉??
- * 諛섑솚: ?깃났 0, ?ㅽ뙣 -1 */
-int storage_delete(const char *table, WhereClause *where, int where_count)
+ * ?숈옉: schema? WHERE瑜?寃利앺븳 ??議곌굔??留욌뒗 row瑜??쒖쇅?섍퀬 ?뚯씠釉??뚯씪 ?꾩껜瑜??ъ옉?? * 諛섑솚: ?깃났 0, ?ㅽ뙣 -1 */
+int storage_delete(const char *table, ParsedSQL *sql)
 {
     char schema_path[STORAGE_PATH_MAX];
     char table_path[STORAGE_PATH_MAX];
     char temp_path[STORAGE_PATH_MAX];
     ColDef *schema = NULL;
     int schema_count = 0;
-    int where_index = -1;
     int status = -1;
 
-    if (validate_delete_input(table, where, where_count) != 0) {
+    if (validate_delete_input(table, sql) != 0) {
         return -1;
     }
 
@@ -196,22 +204,28 @@ int storage_delete(const char *table, WhereClause *where, int where_count)
         return -1;
     }
 
-    if (validate_delete_clause(schema, schema_count, where, where_count, &where_index) != 0) {
+    if (validate_delete_clause(schema, schema_count, sql) != 0) {
         goto cleanup;
     }
 
     status = delete_rows_from_table(table_path, temp_path, schema, schema_count,
-                                    where, where_count, where_index);
+                                    sql);
 
 cleanup:
     free(schema);
     return status;
 }
 
-/* ?낅젰: ?뚯씠釉??대쫫, ?뚯떛??SELECT ?꾩껜 援ъ“泥?
- * ?숈옉: SELECT ???諛깆뿏?쒓? ?꾩쭅 癒몄??섏? ?딆븘 ?꾩옱???몄텧留?諛쏆븘 ?붾떎
+/* ?낅젰: ?뚯씠釉??대쫫, ?뚯떛??SELECT ?꾩껜 援ъ“泥? * ?숈옉: SELECT ???諛깆뿏?쒓? ?꾩쭅 癒몄??섏? ?딆븘 ?꾩옱???몄텧留?諛쏆븘 ?붾떎
  * 諛섑솚: 誘멸뎄???곹깭?대?濡?-1 */
-int storage_select(const char *table, ParsedSQL *sql)
+/* storage_select_result: SELECT 瑜??ㅽ뻾?섍퀬 寃곌낵瑜?RowSet ?쇰줈 諛섑솚.
+ *
+ * ?쇰컲 SELECT ??留ㅼ묶 ?됰뱾??RowSet ?쇰줈 ?⑦궎吏?
+ * 吏묎퀎 ?⑥닔 SELECT (COUNT/SUM/AVG/MIN/MAX) ??怨꾩궛???⑥씪 ??RowSet 諛섑솚.
+ *
+ * ?몄텧?먭? *out ??rowset_free 濡??댁젣?댁빞 ?쒕떎.
+ */
+int storage_select_result(const char *table, ParsedSQL *sql, RowSet **out)
 {
     char schema_path[STORAGE_PATH_MAX];
     char table_path[STORAGE_PATH_MAX];
@@ -221,22 +235,45 @@ int storage_select(const char *table, ParsedSQL *sql)
     StorageRowBuffer selection = {0};
     int status = -1;
 
+    if (out == NULL) {
+        fprintf(stderr, "storage_select_result() received NULL out.\n");
+        return -1;
+    }
+    *out = NULL;
+
     if (table == NULL || table[0] == '\0' || sql == NULL) {
-        fprintf(stderr, "storage_select() received invalid arguments.\n");
+        fprintf(stderr, "storage_select_result() received invalid arguments.\n");
         return -1;
     }
 
     if (build_schema_path(table, schema_path, sizeof(schema_path)) != 0 ||
         build_table_path(table, table_path, sizeof(table_path)) != 0) {
+        fprintf(stderr, "[storage] SELECT: cannot build path for table '%s'\n", table);
         return -1;
     }
 
     if (load_schema(schema_path, &schema, &schema_count) != 0) {
+        fprintf(stderr, "[storage] SELECT: table '%s' not found (schema missing)\n", table);
         return -1;
     }
 
     if (load_table_rows(table_path, schema_count, &rows) != 0) {
+        fprintf(stderr, "[storage] SELECT: cannot read table '%s'\n", table);
         goto cleanup;
+    }
+
+    /* WHERE 而щ읆 ?ъ쟾 寃利???鍮??뚯씠釉??뚮Ц??evaluate_select_clause 媛
+     * ?몄텧?섏? ?딆븘??而щ읆 ?ㅽ?瑜??≪븘以?? */
+    if (sql->where_count > 0 && sql->where != NULL) {
+        int wi;
+        int bad = 0;
+        for (wi = 0; wi < sql->where_count; wi++) {
+            if (find_schema_index(schema, schema_count, sql->where[wi].column) < 0) {
+                fprintf(stderr, "[storage] WHERE column not found: %s\n", sql->where[wi].column);
+                bad = 1;
+            }
+        }
+        if (bad) goto cleanup;
     }
 
     if (collect_matching_rows(sql, schema, schema_count, &rows, &selection) != 0) {
@@ -247,7 +284,18 @@ int storage_select(const char *table, ParsedSQL *sql)
         goto cleanup;
     }
 
-    status = print_selection(sql, schema, schema_count, &selection);
+    /* 吏묎퀎 ?⑥닔 ??而щ읆?대㈃ 蹂꾨룄 泥섎━ (?⑥씪 ??RowSet),
+     * 洹??몄뿉???쇰컲 ???⑦궎吏? */
+    if (sql->col_count == 1 && sql->columns != NULL) {
+        char fn[16];
+        char arg[64];
+        if (parse_aggregate_call(sql->columns[0], fn, sizeof(fn), arg, sizeof(arg)) == 0) {
+            status = build_rowset_for_aggregate(sql, schema, schema_count, &selection, out);
+            goto cleanup;
+        }
+    }
+
+    status = build_rowset_from_selection(sql, schema, schema_count, &selection, out);
 
 cleanup:
     free_row_buffer(&selection, 0);
@@ -256,11 +304,25 @@ cleanup:
     return status;
 }
 
+/* storage_select: 1二쇱감 ?명솚 wrapper.
+ * storage_select_result ?몄텧 ??print_rowset 異쒕젰 ??rowset_free.
+ * ?몃? ?숈옉? 1二쇱감? ?꾩쟾???숈씪.
+ */
+int storage_select(const char *table, ParsedSQL *sql)
+{
+    RowSet *rs = NULL;
+    int status = storage_select_result(table, sql, &rs);
+    if (status == 0 && rs != NULL) {
+        print_rowset(stdout, rs);
+    }
+    rowset_free(rs);
+    return status;
+}
+
 /* ?낅젰: ?뚯씠釉??대쫫, SET ??諛곗뿴, SET 媛쒖닔, WHERE 諛곗뿴, WHERE 媛쒖닔
  * ?숈옉: UPDATE ???諛깆뿏?쒓? ?꾩쭅 ?놁뼱 ?꾩옱???몄텧留?諛쏆븘 ?붾떎
  * 諛섑솚: 誘멸뎄???곹깭?대?濡?-1 */
-int storage_update(const char *table, SetClause *set, int set_count,
-                   WhereClause *where, int where_count)
+int storage_update(const char *table, ParsedSQL *sql)
 {
     char schema_path[STORAGE_PATH_MAX];
     char table_path[STORAGE_PATH_MAX];
@@ -268,10 +330,9 @@ int storage_update(const char *table, SetClause *set, int set_count,
     ColDef *schema = NULL;
     int schema_count = 0;
     int *set_indexes = NULL;
-    int where_index = -1;
     int status = -1;
 
-    if (validate_update_input(table, set, set_count, where, where_count) != 0) {
+    if (validate_update_input(table, sql) != 0) {
         return -1;
     }
 
@@ -291,17 +352,16 @@ int storage_update(const char *table, SetClause *set, int set_count,
         return -1;
     }
 
-    if (validate_update_set_clause(schema, schema_count, set, set_count, &set_indexes) != 0) {
+    if (validate_update_set_clause(schema, schema_count, sql->set, sql->set_count, &set_indexes) != 0) {
         goto cleanup;
     }
 
-    if (validate_delete_clause(schema, schema_count, where, where_count, &where_index) != 0) {
+    if (validate_delete_clause(schema, schema_count, sql) != 0) {
         goto cleanup;
     }
 
     status = update_rows_from_table(table_path, temp_path, schema, schema_count,
-                                    set, set_count, set_indexes,
-                                    where, where_count, where_index);
+                                    sql, set_indexes);
 
 cleanup:
     free(set_indexes);
@@ -387,8 +447,7 @@ cleanup:
 }
 
 /* ?낅젰: ?뚯씠釉??대쫫, 媛?諛곗뿴, 媛?媛쒖닔
- * ?숈옉: INSERT ?ㅽ뻾 ?꾩뿉 NULL/鍮?臾몄옄??媛쒖닔 ?ㅻ쪟 媛숈? 湲곕낯 ?낅젰 ?ㅻ쪟瑜?嫄몃윭??
- * 諛섑솚: ?좏슚?섎㈃ 0, ?섎せ???낅젰?대㈃ -1 */
+ * ?숈옉: INSERT ?ㅽ뻾 ?꾩뿉 NULL/鍮?臾몄옄??媛쒖닔 ?ㅻ쪟 媛숈? 湲곕낯 ?낅젰 ?ㅻ쪟瑜?嫄몃윭?? * 諛섑솚: ?좏슚?섎㈃ 0, ?섎せ???낅젰?대㈃ -1 */
 static int validate_insert_input(const char *table, char **values, int count)
 {
     if (table == NULL || table[0] == '\0') {
@@ -405,56 +464,63 @@ static int validate_insert_input(const char *table, char **values, int count)
 /* ?낅젰: ?뚯씠釉??대쫫, WHERE 諛곗뿴, WHERE 媛쒖닔
  * ?숈옉: DELETE v1 踰붿쐞???꾩껜 ??젣 ?먮뒗 ?⑥씪 WHERE ??젣留??덉슜?섎뒗吏 ?뺤씤
  * 諛섑솚: ?좏슚?섎㈃ 0, ?꾩옱 踰붿쐞瑜?踰쀬뼱?섎㈃ -1 */
-static int validate_delete_input(const char *table, WhereClause *where, int where_count)
+static int validate_delete_input(const char *table, const ParsedSQL *sql)
 {
+    int index;
+
     if (table == NULL || table[0] == '\0') {
         return -1;
     }
 
-    if (where_count < 0) {
+    if (sql == NULL || sql->where_count < 0) {
         return -1;
     }
 
-    if (where_count == 0) {
+    if (sql->where_count == 0) {
         return 0;
     }
 
-    if (where_count != 1 || where == NULL) {
+    if (sql->where == NULL) {
         return -1;
     }
 
-    if (where[0].column[0] == '\0' || where[0].op[0] == '\0') {
-        return -1;
+    for (index = 0; index < sql->where_count; ++index) {
+        if (sql->where[index].column[0] == '\0' || sql->where[index].op[0] == '\0') {
+            return -1;
+        }
     }
 
     return 0;
 }
 
-static int validate_update_input(const char *table, SetClause *set, int set_count,
-                                 WhereClause *where, int where_count)
+static int validate_update_input(const char *table, const ParsedSQL *sql)
 {
+    int index;
+
     if (table == NULL || table[0] == '\0') {
         return -1;
     }
 
-    if (set == NULL || set_count <= 0) {
+    if (sql == NULL || sql->set == NULL || sql->set_count <= 0) {
         return -1;
     }
 
-    if (where_count < 0) {
+    if (sql->where_count < 0) {
         return -1;
     }
 
-    if (where_count == 0) {
+    if (sql->where_count == 0) {
         return 0;
     }
 
-    if (where_count != 1 || where == NULL) {
+    if (sql->where == NULL) {
         return -1;
     }
 
-    if (where[0].column[0] == '\0' || where[0].op[0] == '\0') {
-        return -1;
+    for (index = 0; index < sql->where_count; ++index) {
+        if (sql->where[index].column[0] == '\0' || sql->where[index].op[0] == '\0') {
+            return -1;
+        }
     }
 
     return 0;
@@ -571,8 +637,7 @@ static int build_temp_path(const char *table, char *out, size_t size)
     return 0;
 }
 
-/* ?낅젰: schema ?뚯씪 寃쎈줈, 寃곌낵 schema 諛곗뿴 ?ъ씤?? 寃곌낵 媛쒖닔 ?ъ씤??
- * ?숈옉: <column_name>,<type> ?뺤떇??schema ?뚯씪???쎌뼱 ColDef 諛곗뿴濡??곸옱
+/* ?낅젰: schema ?뚯씪 寃쎈줈, 寃곌낵 schema 諛곗뿴 ?ъ씤?? 寃곌낵 媛쒖닔 ?ъ씤?? * ?숈옉: <column_name>,<type> ?뺤떇??schema ?뚯씪???쎌뼱 ColDef 諛곗뿴濡??곸옱
  * 諛섑솚: ?깃났 0, ?뚯씪 ?뺤떇 ?ㅻ쪟/硫붾え由??ㅻ쪟/鍮?schema硫?-1 */
 static int load_schema(const char *schema_path, ColDef **out_schema, int *out_count)
 {
@@ -635,8 +700,7 @@ static int load_schema(const char *schema_path, ColDef **out_schema, int *out_co
     return 0;
 }
 
-/* ?낅젰: schema 諛곗뿴, schema 媛쒖닔, 李얠쓣 而щ읆紐?
- * ?숈옉: 而щ읆紐낆쓣 ??뚮Ц??臾댁떆濡?鍮꾧탳??schema index ?먯깋
+/* ?낅젰: schema 諛곗뿴, schema 媛쒖닔, 李얠쓣 而щ읆紐? * ?숈옉: 而щ읆紐낆쓣 ??뚮Ц??臾댁떆濡?鍮꾧탳??schema index ?먯깋
  * 諛섑솚: 李얠쑝硫?0 ?댁긽 index, ?놁쑝硫?-1 */
 static int find_schema_index(const ColDef *schema, int schema_count, const char *column)
 {
@@ -656,8 +720,7 @@ static int find_schema_index(const ColDef *schema, int schema_count, const char 
 }
 
 /* ?낅젰: schema 諛곗뿴, schema 媛쒖닔, optional 而щ읆 紐⑸줉, 媛?紐⑸줉, 媛?媛쒖닔
- * ?숈옉: INSERT ?낅젰??schema ?쒖꽌? 1:1濡?留욌뒗 row 臾몄옄??諛곗뿴濡??ш뎄??
- * 諛섑솚: ?깃났 ??out_row????諛곗뿴???섍린怨?0, 遺덉씪移?以묐났/?꾨씫?대㈃ -1 */
+ * ?숈옉: INSERT ?낅젰??schema ?쒖꽌? 1:1濡?留욌뒗 row 臾몄옄??諛곗뿴濡??ш뎄?? * 諛섑솚: ?깃났 ??out_row????諛곗뿴???섍린怨?0, 遺덉씪移?以묐났/?꾨씫?대㈃ -1 */
 static int build_row_in_schema_order(const ColDef *schema, int schema_count,
                                      char **columns, char **values, int count,
                                      char ***out_row)
@@ -724,8 +787,7 @@ static int build_row_in_schema_order(const ColDef *schema, int schema_count,
 }
 
 /* ?낅젰: ?뚯씠釉?CSV 寃쎈줈, row 諛곗뿴, row 湲몄씠
- * ?숈옉: row ?섎굹瑜??뚯씪 ?앹뿉 異붽? ???
- * 諛섑솚: ????깃났 0, ?뚯씪 ?닿린/?곌린 ?ㅽ뙣 -1 */
+ * ?숈옉: row ?섎굹瑜??뚯씪 ?앹뿉 異붽? ??? * 諛섑솚: ????깃났 0, ?뚯씪 ?닿린/?곌린 ?ㅽ뙣 -1 */
 static int append_csv_row(const char *table_path, char **row, int row_count)
 {
     FILE *fp;
@@ -773,8 +835,7 @@ static int write_csv_row(FILE *fp, char **row, int row_count)
     return 0;
 }
 
-/* ?낅젰: 異쒕젰 ?뚯씪 ?ъ씤?? field 臾몄옄??
- * ?숈옉: ?쇳몴/?곗샂??媛쒗뻾???덉쑝硫?quote escape 洹쒖튃???곸슜??field ?섎굹 異쒕젰
+/* ?낅젰: 異쒕젰 ?뚯씪 ?ъ씤?? field 臾몄옄?? * ?숈옉: ?쇳몴/?곗샂??媛쒗뻾???덉쑝硫?quote escape 洹쒖튃???곸슜??field ?섎굹 異쒕젰
  * 諛섑솚: 異쒕젰 ?깃났 0, ?곌린 ?ㅽ뙣 -1 */
 static int write_csv_field(FILE *fp, const char *value)
 {
@@ -824,45 +885,51 @@ static int write_csv_field(FILE *fp, const char *value)
  * ?숈옉: ?⑥씪 WHERE??而щ읆 議댁옱 ?щ?, ?곗궛??吏???щ?, literal ????곹빀???뺤씤
  * 諛섑솚: ?깃났 ?????而щ읆 index瑜?out_where_index???곌퀬 0, ?ㅽ뙣 -1 */
 static int validate_delete_clause(const ColDef *schema, int schema_count,
-                                  WhereClause *where, int where_count,
-                                  int *out_where_index)
+                                  const ParsedSQL *sql)
 {
-    int where_index;
-    ColumnType type;
+    int index;
 
-    if (out_where_index == NULL) {
+    if (schema == NULL || sql == NULL) {
         return -1;
     }
 
-    *out_where_index = -1;
-
-    if (where_count == 0 || where == NULL) {
+    if (sql->where_count == 0 || sql->where == NULL) {
         return 0;
     }
 
-    if (where_count != 1) {
-        return -1;
+    for (index = 0; index < sql->where_count; ++index) {
+        int where_index;
+        ColumnType type;
+        const char *link;
+
+        where_index = find_schema_index(schema, schema_count, sql->where[index].column);
+        if (where_index < 0) {
+            return -1;
+        }
+
+        type = schema[where_index].type;
+        if (!is_supported_operator(sql->where[index].op)) {
+            return -1;
+        }
+
+        if (!is_supported_operator_for_type(type, sql->where[index].op)) {
+            return -1;
+        }
+
+        if (validate_literal_for_type(type, sql->where[index].op, sql->where[index].value) != 0) {
+            return -1;
+        }
+
+        if (index + 1 >= sql->where_count) {
+            continue;
+        }
+
+        link = resolve_where_link(sql, index);
+        if (!equals_ignore_case(link, "AND") && !equals_ignore_case(link, "OR")) {
+            return -1;
+        }
     }
 
-    where_index = find_schema_index(schema, schema_count, where[0].column);
-    if (where_index < 0) {
-        return -1;
-    }
-
-    type = schema[where_index].type;
-    if (!is_supported_operator(where[0].op)) {
-        return -1;
-    }
-
-    if (!is_supported_operator_for_type(type, where[0].op)) {
-        return -1;
-    }
-
-    if (validate_literal_for_type(type, where[0].op, where[0].value) != 0) {
-        return -1;
-    }
-
-    *out_where_index = where_index;
     return 0;
 }
 
@@ -919,12 +986,10 @@ static int validate_update_set_clause(const ColDef *schema, int schema_count,
 }
 
 /* ?낅젰: ?먮낯 ?뚯씠釉?寃쎈줈, ?꾩떆 ?뚯씪 寃쎈줈, schema, optional WHERE ?뺣낫
- * ?숈옉: ?뚯씠釉붿쓣 record ?⑥쐞濡??쎄퀬 DELETE 議곌굔????留욌뒗 row留?temp ?뚯씪???ъ???
- * 諛섑솚: ?ъ옉???깃났 0, CSV ?뚯떛/?곌린/?뚯씪 援먯껜 ?ㅽ뙣 -1 */
+ * ?숈옉: ?뚯씠釉붿쓣 record ?⑥쐞濡??쎄퀬 DELETE 議곌굔????留욌뒗 row留?temp ?뚯씪???ъ??? * 諛섑솚: ?ъ옉???깃났 0, CSV ?뚯떛/?곌린/?뚯씪 援먯껜 ?ㅽ뙣 -1 */
 static int delete_rows_from_table(const char *table_path, const char *temp_path,
                                   const ColDef *schema, int schema_count,
-                                  WhereClause *where, int where_count,
-                                  int where_index)
+                                  const ParsedSQL *sql)
 {
     FILE *source_fp = NULL;
     FILE *temp_fp = NULL;
@@ -971,8 +1036,7 @@ static int delete_rows_from_table(const char *table_path, const char *temp_path,
             goto cleanup;
         }
 
-        if (row_matches_delete(schema, row, row_count, where, where_count,
-                               where_index, &matches) != 0) {
+        if (row_matches_delete(schema, schema_count, row, row_count, sql, &matches) != 0) {
             free_string_array(row, row_count);
             goto cleanup;
         }
@@ -1021,10 +1085,7 @@ cleanup:
 
 static int update_rows_from_table(const char *table_path, const char *temp_path,
                                   const ColDef *schema, int schema_count,
-                                  SetClause *set, int set_count,
-                                  const int *set_indexes,
-                                  WhereClause *where, int where_count,
-                                  int where_index)
+                                  const ParsedSQL *sql, const int *set_indexes)
 {
     FILE *source_fp = NULL;
     FILE *temp_fp = NULL;
@@ -1071,13 +1132,12 @@ static int update_rows_from_table(const char *table_path, const char *temp_path,
             goto cleanup;
         }
 
-        if (row_matches_delete(schema, row, row_count, where, where_count,
-                               where_index, &matches) != 0) {
+        if (row_matches_delete(schema, schema_count, row, row_count, sql, &matches) != 0) {
             free_string_array(row, row_count);
             goto cleanup;
         }
 
-        if (matches && apply_update_to_row(row, row_count, set, set_count, set_indexes) != 0) {
+        if (matches && apply_update_to_row(row, row_count, sql->set, sql->set_count, set_indexes) != 0) {
             free_string_array(row, row_count);
             goto cleanup;
         }
@@ -1124,8 +1184,7 @@ cleanup:
     return status;
 }
 
-/* ?낅젰: CSV ?뚯씪 ?ъ씤?? 寃곌낵 ?덉퐫??臾몄옄???ъ씤??
- * ?숈옉: quoted field ?덉쓽 媛쒗뻾??蹂댁〈?섎㈃???덉퐫????媛쒕? 臾몄옄?대줈 ?쎌쓬
+/* ?낅젰: CSV ?뚯씪 ?ъ씤?? 寃곌낵 ?덉퐫??臾몄옄???ъ씤?? * ?숈옉: quoted field ?덉쓽 媛쒗뻾??蹂댁〈?섎㈃???덉퐫????媛쒕? 臾몄옄?대줈 ?쎌쓬
  * 諛섑솚: ?덉퐫??1媛??쎌쓬 1, EOF 0, malformed CSV/硫붾え由??ㅻ쪟 -1 */
 static int read_csv_record(FILE *fp, char **out_record)
 {
@@ -1203,8 +1262,7 @@ static int read_csv_record(FILE *fp, char **out_record)
     return 1;
 }
 
-/* ?낅젰: ?덉퐫??臾몄옄?? 寃곌낵 field 諛곗뿴 ?ъ씤?? 寃곌낵 field 媛쒖닔 ?ъ씤??
- * ?숈옉: quote escape 洹쒖튃???곸슜??CSV ?덉퐫?쒕? 臾몄옄??諛곗뿴濡??뚯떛
+/* ?낅젰: ?덉퐫??臾몄옄?? 寃곌낵 field 諛곗뿴 ?ъ씤?? 寃곌낵 field 媛쒖닔 ?ъ씤?? * ?숈옉: quote escape 洹쒖튃???곸슜??CSV ?덉퐫?쒕? 臾몄옄??諛곗뿴濡??뚯떛
  * 諛섑솚: ?뚯떛 ?깃났 0, malformed CSV/硫붾え由??ㅻ쪟 -1 */
 static int parse_csv_record(const char *record, char ***out_fields, int *out_count)
 {
@@ -1376,28 +1434,48 @@ static int push_field(char ***fields, int *field_count,
 /* ?낅젰: schema, ?꾩옱 row, optional WHERE ?뺣낫
  * ?숈옉: ?꾩껜 ??젣硫???긽 match, ?⑥씪 WHERE硫????而щ읆 媛믨낵 literal??鍮꾧탳
  * 諛섑솚: 鍮꾧탳 ?깃났 0, 寃곌낵??out_match??湲곕줉, 鍮꾧탳 遺덇?硫?-1 */
-static int row_matches_delete(const ColDef *schema, char **row, int row_count,
-                              WhereClause *where, int where_count,
-                              int where_index, int *out_match)
+static int row_matches_delete(const ColDef *schema, int schema_count,
+                              char **row, int row_count,
+                              const ParsedSQL *sql, int *out_match)
 {
+    int group_match;
+    int clause_match;
+    int index;
+
     if (out_match == NULL || schema == NULL || row == NULL) {
         return -1;
     }
 
-    if (where_count == 0 || where == NULL) {
+    if (sql == NULL || sql->where_count == 0 || sql->where == NULL) {
         *out_match = 1;
         return 0;
     }
 
-    if (where_count != 1 || where_index < 0 || where_index >= row_count) {
+    if (evaluate_select_clause(schema, schema_count, row, row_count, &sql->where[0], &group_match) != 0) {
         return -1;
     }
 
-    return compare_value_by_type(schema[where_index].type,
-                                 row[where_index],
-                                 where[0].op,
-                                 where[0].value,
-                                 out_match);
+    *out_match = 0;
+    for (index = 1; index < sql->where_count; ++index) {
+        const char *link = resolve_where_link(sql, index - 1);
+
+        if (evaluate_select_clause(schema, schema_count, row, row_count,
+                                   &sql->where[index], &clause_match) != 0) {
+            return -1;
+        }
+
+        if (equals_ignore_case(link, "AND")) {
+            group_match = group_match && clause_match;
+        } else if (equals_ignore_case(link, "OR")) {
+            *out_match = *out_match || group_match;
+            group_match = clause_match;
+        } else {
+            return -1;
+        }
+    }
+
+    *out_match = *out_match || group_match;
+    return 0;
 }
 
 static int apply_update_to_row(char **row, int row_count,
@@ -1508,9 +1586,7 @@ static int compare_value_by_type(ColumnType type, const char *left,
     return -1;
 }
 
-/* ?낅젰: ?쇳빆 鍮꾧탳 寃곌낵 cmp, SQL ?곗궛??臾몄옄??
- * ?숈옉: cmp 媛믪쓣 =, !=, >, <, >=, <= ?섎???留욎떠 bool 寃곌낵濡?蹂??
- * 諛섑솚: 吏???곗궛?먮㈃ 0, ?????녿뒗 ?곗궛?먮㈃ -1 */
+/* ?낅젰: ?쇳빆 鍮꾧탳 寃곌낵 cmp, SQL ?곗궛??臾몄옄?? * ?숈옉: cmp 媛믪쓣 =, !=, >, <, >=, <= ?섎???留욎떠 bool 寃곌낵濡?蹂?? * 諛섑솚: 吏???곗궛?먮㈃ 0, ?????녿뒗 ?곗궛?먮㈃ -1 */
 static int compare_ordering_result(int cmp, const char *op, int *out_match)
 {
     if (strcmp(op, "=") == 0) {
@@ -1532,9 +1608,7 @@ static int compare_ordering_result(int cmp, const char *op, int *out_match)
     return 0;
 }
 
-/* ?낅젰: ?レ옄 臾몄옄?? 寃곌낵 long ?ъ씤??
- * ?숈옉: 臾몄옄???꾩껜媛 ?뺤닔?몄? 寃?ы븯硫댁꽌 strtol濡?蹂??
- * 諛섑솚: ?뚯떛 ?깃났 0, ?レ옄媛 ?꾨땲硫?-1 */
+/* ?낅젰: ?レ옄 臾몄옄?? 寃곌낵 long ?ъ씤?? * ?숈옉: 臾몄옄???꾩껜媛 ?뺤닔?몄? 寃?ы븯硫댁꽌 strtol濡?蹂?? * 諛섑솚: ?뚯떛 ?깃났 0, ?レ옄媛 ?꾨땲硫?-1 */
 static int parse_long_value(const char *text, long *out_value)
 {
     char *end = NULL;
@@ -1554,9 +1628,7 @@ static int parse_long_value(const char *text, long *out_value)
     return 0;
 }
 
-/* ?낅젰: ?レ옄 臾몄옄?? 寃곌낵 double ?ъ씤??
- * ?숈옉: 臾몄옄???꾩껜媛 ?ㅼ닔?몄? 寃?ы븯硫댁꽌 strtod濡?蹂??
- * 諛섑솚: ?뚯떛 ?깃났 0, ?レ옄媛 ?꾨땲硫?-1 */
+/* ?낅젰: ?レ옄 臾몄옄?? 寃곌낵 double ?ъ씤?? * ?숈옉: 臾몄옄???꾩껜媛 ?ㅼ닔?몄? 寃?ы븯硫댁꽌 strtod濡?蹂?? * 諛섑솚: ?뚯떛 ?깃났 0, ?レ옄媛 ?꾨땲硫?-1 */
 static int parse_double_value(const char *text, double *out_value)
 {
     char *end = NULL;
@@ -1576,9 +1648,7 @@ static int parse_double_value(const char *text, double *out_value)
     return 0;
 }
 
-/* ?낅젰: boolean 臾몄옄?? 寃곌낵 int ?ъ씤??
- * ?숈옉: true/false/1/0 ?뺥깭瑜??대? 0 ?먮뒗 1 媛믪쑝濡?蹂??
- * 諛섑솚: ?뚯떛 ?깃났 0, boolean?쇰줈 ?댁꽍 遺덇?硫?-1 */
+/* ?낅젰: boolean 臾몄옄?? 寃곌낵 int ?ъ씤?? * ?숈옉: true/false/1/0 ?뺥깭瑜??대? 0 ?먮뒗 1 媛믪쑝濡?蹂?? * 諛섑솚: ?뚯떛 ?깃났 0, boolean?쇰줈 ?댁꽍 遺덇?硫?-1 */
 static int parse_boolean_value(const char *text, int *out_value)
 {
     if (text == NULL || out_value == NULL) {
@@ -1660,8 +1730,7 @@ static int replace_table_file(const char *table_path, const char *temp_path)
     return 0;
 }
 
-/* ?낅젰: SQL ?곗궛??臾몄옄??
- * ?숈옉: DELETE v1?먯꽌 援ы쁽???곗궛?먯씤吏 ?뺤씤
+/* ?낅젰: SQL ?곗궛??臾몄옄?? * ?숈옉: DELETE v1?먯꽌 援ы쁽???곗궛?먯씤吏 ?뺤씤
  * 諛섑솚: 吏?먰븯硫?1, ?꾨땲硫?0 */
 static int is_supported_operator(const char *op)
 {
@@ -1674,8 +1743,7 @@ static int is_supported_operator(const char *op)
            strcmp(op, "LIKE") == 0;
 }
 
-/* ?낅젰: 而щ읆 ??? SQL ?곗궛??臾몄옄??
- * ?숈옉: ??낅퀎 鍮꾧탳 洹쒖튃??留욌뒗 ?곗궛?먮쭔 ?덉슜
+/* ?낅젰: 而щ읆 ??? SQL ?곗궛??臾몄옄?? * ?숈옉: ??낅퀎 鍮꾧탳 洹쒖튃??留욌뒗 ?곗궛?먮쭔 ?덉슜
  * 諛섑솚: ?덉슜?섎㈃ 1, ?꾨땲硫?0 */
 static int is_supported_operator_for_type(ColumnType type, const char *op)
 {
@@ -1696,8 +1764,7 @@ static int is_supported_operator_for_type(ColumnType type, const char *op)
     return 0;
 }
 
-/* ?낅젰: 而щ읆 ??? SQL ?곗궛?? WHERE literal 臾몄옄??
- * ?숈옉: ?ㅼ젣 row 鍮꾧탳 ?꾩뿉 literal ?먯껜媛 ?대떦 ??낆쑝濡??댁꽍 媛?ν븳吏 ?먭?
+/* ?낅젰: 而щ읆 ??? SQL ?곗궛?? WHERE literal 臾몄옄?? * ?숈옉: ?ㅼ젣 row 鍮꾧탳 ?꾩뿉 literal ?먯껜媛 ?대떦 ??낆쑝濡??댁꽍 媛?ν븳吏 ?먭?
  * 諛섑솚: ?좏슚?섎㈃ 0, ??낃낵 ??留욎쑝硫?-1 */
 static int validate_literal_for_type(ColumnType type, const char *op, const char *value)
 {
@@ -1808,8 +1875,7 @@ static void free_string_array(char **arr, int count)
     free(arr);
 }
 
-/* ?낅젰: ?먮낯 臾몄옄??
- * ?숈옉: NULL? 鍮?臾몄옄?대줈 蹂닿퀬 ??蹂듭궗蹂몄쓣 ?좊떦
+/* ?낅젰: ?먮낯 臾몄옄?? * ?숈옉: NULL? 鍮?臾몄옄?대줈 蹂닿퀬 ??蹂듭궗蹂몄쓣 ?좊떦
  * 諛섑솚: ??臾몄옄???ъ씤?? 硫붾え由?遺議깆씠硫?NULL */
 static char *dup_string(const char *src)
 {
@@ -1845,8 +1911,7 @@ static char *trim_whitespace(char *text)
     return text;
 }
 
-/* ?낅젰: 鍮꾧탳????臾몄옄??
- * ?숈옉: ASCII 湲곗? ??뚮Ц?먮? 臾댁떆?섍퀬 媛숈? 臾몄옄?댁씤吏 鍮꾧탳
+/* ?낅젰: 鍮꾧탳????臾몄옄?? * ?숈옉: ASCII 湲곗? ??뚮Ц?먮? 臾댁떆?섍퀬 媛숈? 臾몄옄?댁씤吏 鍮꾧탳
  * 諛섑솚: 媛숈쑝硫?1, ?ㅻⅤ硫?0 */
 static int equals_ignore_case(const char *left, const char *right)
 {
@@ -1861,9 +1926,7 @@ static int equals_ignore_case(const char *left, const char *right)
     return *left == '\0' && *right == '\0';
 }
 
-/* ?낅젰: schema???곹엺 ???臾몄옄?? 寃곌낵 enum ?ъ씤??
- * ?숈옉: INT/VARCHAR/FLOAT/BOOLEAN/DATE/DATETIME 臾몄옄?댁쓣 enum?쇰줈 蹂??
- * 諛섑솚: 蹂???깃났 0, ?????녿뒗 ??낆씠硫?-1 */
+/* ?낅젰: schema???곹엺 ???臾몄옄?? 寃곌낵 enum ?ъ씤?? * ?숈옉: INT/VARCHAR/FLOAT/BOOLEAN/DATE/DATETIME 臾몄옄?댁쓣 enum?쇰줈 蹂?? * 諛섑솚: 蹂???깃났 0, ?????녿뒗 ??낆씠硫?-1 */
 static int parse_column_type(const char *text, ColumnType *out_type)
 {
     if (text == NULL || out_type == NULL) {
@@ -1889,31 +1952,9 @@ static int parse_column_type(const char *text, ColumnType *out_type)
     return 0;
 }
 
-static int normalized_equals_ignore_case(const char *left, const char *right)
-{
-    char left_buffer[256];
-    char right_buffer[256];
-    size_t left_index = 0U;
-    size_t right_index = 0U;
-
-    while (left != NULL && *left != '\0' && left_index + 1U < sizeof(left_buffer)) {
-        if (!isspace((unsigned char)*left)) {
-            left_buffer[left_index++] = (char)tolower((unsigned char)*left);
-        }
-        ++left;
-    }
-    left_buffer[left_index] = '\0';
-
-    while (right != NULL && *right != '\0' && right_index + 1U < sizeof(right_buffer)) {
-        if (!isspace((unsigned char)*right)) {
-            right_buffer[right_index++] = (char)tolower((unsigned char)*right);
-        }
-        ++right;
-    }
-    right_buffer[right_index] = '\0';
-
-    return strcmp(left_buffer, right_buffer) == 0;
-}
+/* normalized_equals_ignore_case ??1二쇱감??is_count_star 媛 ?ъ슜?덈뜕 helper.
+ * Phase 1 ??parse_aggregate_call 媛 ?먯껜 ?뺢퇋?붾? ?댁꽌 ???댁긽 ?몄텧?섏? ?딆븘
+ * ?쒓굅?? */
 
 static void strip_optional_quotes(const char *input, char *output, size_t output_size)
 {
@@ -2141,14 +2182,24 @@ static int evaluate_select_clause(const ColDef *schema, int schema_count,
 
     column_index = find_schema_index(schema, schema_count, clause->column);
     if (column_index < 0 || column_index >= row_count) {
+        fprintf(stderr, "[storage] WHERE column not found: %s\n", clause->column);
         return -1;
     }
 
     strip_optional_quotes(clause->value, literal, sizeof(literal));
 
-    if (!is_supported_operator(clause->op) ||
-        !is_supported_operator_for_type(schema[column_index].type, clause->op) ||
-        validate_literal_for_type(schema[column_index].type, clause->op, literal) != 0) {
+    if (!is_supported_operator(clause->op)) {
+        fprintf(stderr, "[storage] unsupported WHERE operator: %s\n", clause->op);
+        return -1;
+    }
+    if (!is_supported_operator_for_type(schema[column_index].type, clause->op)) {
+        fprintf(stderr, "[storage] operator '%s' not allowed on column '%s' of given type\n",
+                clause->op, clause->column);
+        return -1;
+    }
+    if (validate_literal_for_type(schema[column_index].type, clause->op, literal) != 0) {
+        fprintf(stderr, "[storage] WHERE value '%s' invalid for column '%s'\n",
+                literal, clause->column);
         return -1;
     }
 
@@ -2160,45 +2211,32 @@ static int evaluate_select_clause(const ColDef *schema, int schema_count,
     return compare_status;
 }
 
+static const char *resolve_where_link(const ParsedSQL *sql, int index)
+{
+    if (sql == NULL || index < 0) {
+        return "AND";
+    }
+
+    if (sql->where_links != NULL && index < sql->where_count - 1 &&
+        sql->where_links[index] != NULL) {
+        return sql->where_links[index];
+    }
+
+    if (sql->where_logic[0] != '\0') {
+        return sql->where_logic;
+    }
+
+    return "AND";
+}
+
 static int row_matches_select(const ParsedSQL *sql, const ColDef *schema, int schema_count,
                               char **row, int row_count, int *matched)
 {
-    int index;
-    int clause_match;
-    int use_or_logic;
-
     if (sql == NULL || schema == NULL || row == NULL || matched == NULL) {
         return -1;
     }
 
-    if (sql->where_count <= 0 || sql->where == NULL) {
-        *matched = 1;
-        return 0;
-    }
-
-    use_or_logic = equals_ignore_case(sql->where_logic, "OR");
-    *matched = use_or_logic ? 0 : 1;
-
-    for (index = 0; index < sql->where_count; ++index) {
-        if (evaluate_select_clause(schema, schema_count, row, row_count,
-                                   &sql->where[index], &clause_match) != 0) {
-            return -1;
-        }
-
-        if (use_or_logic) {
-            *matched = *matched || clause_match;
-            if (*matched) {
-                return 0;
-            }
-        } else {
-            *matched = *matched && clause_match;
-            if (!*matched) {
-                return 0;
-            }
-        }
-    }
-
-    return 0;
+    return row_matches_delete(schema, schema_count, row, row_count, sql, matched);
 }
 
 static int collect_matching_rows(const ParsedSQL *sql, const ColDef *schema, int schema_count,
@@ -2361,14 +2399,6 @@ static int is_select_all(const ParsedSQL *sql)
              strcmp(sql->columns[0], "*") == 0));
 }
 
-static int is_count_star(const ParsedSQL *sql)
-{
-    return sql != NULL &&
-           sql->col_count == 1 &&
-           sql->columns != NULL &&
-           normalized_equals_ignore_case(sql->columns[0], "COUNT(*)");
-}
-
 static int resolve_selected_columns(const ParsedSQL *sql, const ColDef *schema, int schema_count,
                                     int **indices_out, int *count_out)
 {
@@ -2402,6 +2432,7 @@ static int resolve_selected_columns(const ParsedSQL *sql, const ColDef *schema, 
     for (index = 0; index < sql->col_count; ++index) {
         indices[index] = find_schema_index(schema, schema_count, sql->columns[index]);
         if (indices[index] < 0) {
+            fprintf(stderr, "[storage] SELECT column not found: %s\n", sql->columns[index]);
             free(indices);
             return -1;
         }
@@ -2412,56 +2443,9 @@ static int resolve_selected_columns(const ParsedSQL *sql, const ColDef *schema, 
     return 0;
 }
 
-static int print_selection(const ParsedSQL *sql, const ColDef *schema, int schema_count,
-                           const StorageRowBuffer *selection)
-{
-    int *selected_indices = NULL;
-    int selected_count = 0;
-    int limit;
-    int row_index;
-    int index;
-
-    if (sql == NULL || schema == NULL || selection == NULL) {
-        return -1;
-    }
-
-    if (is_count_star(sql)) {
-        printf("COUNT(*)\n%d\n", selection->count);
-        return 0;
-    }
-
-    if (resolve_selected_columns(sql, schema, schema_count,
-                                 &selected_indices, &selected_count) != 0) {
-        return -1;
-    }
-
-    for (index = 0; index < selected_count; ++index) {
-        if (index > 0) {
-            printf(" | ");
-        }
-        printf("%s%s%s", TABLE_HEADER_COLOR, schema[selected_indices[index]].name, TABLE_COLOR_RESET);
-    }
-    printf("\n");
-
-    limit = sql->limit;
-    if (limit < 0 || limit > selection->count) {
-        limit = selection->count;
-    }
-
-    for (row_index = 0; row_index < limit; ++row_index) {
-        for (index = 0; index < selected_count; ++index) {
-            if (index > 0) {
-                printf(" | ");
-            }
-            printf("%s", selection->rows[row_index][selected_indices[index]]);
-        }
-        printf("\n");
-    }
-
-    printf("(%d rows)\n", limit);
-    free(selected_indices);
-    return 0;
-}
+/* print_selection: Phase 1 ?먯꽌 storage_select 媛 wrapper 濡?諛붾뚮㈃?? * dead code 媛 ?먮떎. RowSet 湲곕컲 print_rowset ?쇰줈 ?숈씪 異쒕젰 ?뺤떇???좎?.
+ * is_count_star ??build_rowset_for_aggregate ?덉뿉???쇰컲?붾릺?????댁긽
+ * 吏곸젒 ?몄텧?섏? ?딅뒗?? ???⑥닔 紐⑤몢 蹂댁〈?섏? ?딄퀬 ?쒓굅. */
 
 static void free_row_buffer(StorageRowBuffer *buffer, int free_cells)
 {
@@ -2482,5 +2466,354 @@ static void free_row_buffer(StorageRowBuffer *buffer, int free_cells)
     buffer->count = 0;
     buffer->capacity = 0;
     buffer->row_width = 0;
+}
+
+/* ============================================================================
+ * Phase 1 ??RowSet ?명봽??+ 吏묎퀎 ?⑥닔
+ * ============================================================================
+ */
+
+/* RowSet 鍮?而⑦뀒?대꼫 ?좊떦. col_names / rows ???몄텧?먭? 梨꾩슫?? */
+static int rowset_alloc(RowSet **out, int row_count, int col_count)
+{
+    RowSet *rs;
+
+    if (out == NULL) return -1;
+    *out = NULL;
+
+    rs = calloc(1, sizeof(*rs));
+    if (rs == NULL) return -1;
+
+    rs->row_count = row_count;
+    rs->col_count = col_count;
+
+    if (col_count > 0) {
+        rs->col_names = calloc((size_t)col_count, sizeof(*rs->col_names));
+        if (rs->col_names == NULL) { free(rs); return -1; }
+    }
+    if (row_count > 0) {
+        rs->rows = calloc((size_t)row_count, sizeof(*rs->rows));
+        if (rs->rows == NULL) {
+            free(rs->col_names);
+            free(rs);
+            return -1;
+        }
+    }
+
+    *out = rs;
+    return 0;
+}
+
+/* RowSet 怨?洹??덉쓽 紐⑤뱺 硫붾え由??댁젣. NULL safe. */
+void rowset_free(RowSet *rs)
+{
+    int i, j;
+
+    if (rs == NULL) return;
+
+    if (rs->col_names) {
+        for (j = 0; j < rs->col_count; j++) free(rs->col_names[j]);
+        free(rs->col_names);
+    }
+
+    if (rs->rows) {
+        for (i = 0; i < rs->row_count; i++) {
+            if (rs->rows[i]) {
+                for (j = 0; j < rs->col_count; j++) free(rs->rows[i][j]);
+                free(rs->rows[i]);
+            }
+        }
+        free(rs->rows);
+    }
+
+    free(rs);
+}
+
+/* RowSet ???щ엺???쎄린 醫뗭? ???뺥깭濡?異쒕젰.
+ * 1二쇱감??print_selection 異쒕젰 ?뺤떇怨??숈씪:
+ *   col1 | col2 | col3
+ *   v1   | v2   | v3
+ *   ...
+ *   (N rows)
+ */
+void print_rowset(FILE *out, const RowSet *rs)
+{
+    int i, j;
+
+    if (out == NULL || rs == NULL) return;
+
+    /* ?ㅻ뜑 */
+    for (j = 0; j < rs->col_count; j++) {
+        if (j > 0) fprintf(out, " | ");
+        fprintf(out, "%s%s%s", TABLE_HEADER_COLOR, rs->col_names[j] ? rs->col_names[j] : "", TABLE_COLOR_RESET);
+    }
+    fprintf(out, "\n");
+
+    /* ?곗씠????*/
+    for (i = 0; i < rs->row_count; i++) {
+        for (j = 0; j < rs->col_count; j++) {
+            if (j > 0) fprintf(out, " | ");
+            fprintf(out, "%s", rs->rows[i][j] ? rs->rows[i][j] : "");
+        }
+        fprintf(out, "\n");
+    }
+
+    /* ?명꽣 */
+    fprintf(out, "(%d rows)\n", rs->row_count);
+}
+
+/* ?쇰컲 SELECT 寃곌낵瑜?RowSet ?쇰줈 ?⑦궎吏?
+ * 湲곗〈 print_selection ??而щ읆 ?좏깮 濡쒖쭅 + LIMIT 泥섎━ + RowSet 鍮뚮뱶. */
+static int build_rowset_from_selection(const ParsedSQL *sql, const ColDef *schema, int schema_count,
+                                       const StorageRowBuffer *selection, RowSet **out)
+{
+    int *selected_indices = NULL;
+    int selected_count = 0;
+    int limit;
+    int i, j;
+    RowSet *rs = NULL;
+
+    if (resolve_selected_columns(sql, schema, schema_count,
+                                 &selected_indices, &selected_count) != 0) {
+        return -1;
+    }
+
+    /* LIMIT ?곸슜 */
+    limit = sql->limit;
+    if (limit < 0 || limit > selection->count) {
+        limit = selection->count;
+    }
+
+    if (rowset_alloc(&rs, limit, selected_count) != 0) {
+        free(selected_indices);
+        return -1;
+    }
+
+    /* 而щ읆 ?대쫫 梨꾩슦湲?*/
+    for (j = 0; j < selected_count; j++) {
+        rs->col_names[j] = dup_string(schema[selected_indices[j]].name);
+        if (rs->col_names[j] == NULL) goto fail;
+    }
+
+    /* ?곗씠????蹂듭궗 */
+    for (i = 0; i < limit; i++) {
+        rs->rows[i] = calloc((size_t)selected_count, sizeof(char *));
+        if (rs->rows[i] == NULL) goto fail;
+        for (j = 0; j < selected_count; j++) {
+            const char *src = selection->rows[i][selected_indices[j]];
+            rs->rows[i][j] = dup_string(src ? src : "");
+            if (rs->rows[i][j] == NULL) goto fail;
+        }
+    }
+
+    free(selected_indices);
+    *out = rs;
+    return 0;
+
+fail:
+    free(selected_indices);
+    rowset_free(rs);
+    return -1;
+}
+
+/* "COUNT(*)" / "SUM(price)" / "AVG ( age )" 媛숈? ?⑥닔 ?몄텧??而щ읆 ?몄떇.
+ * ?깃났 ??fn_out ???⑥닔 ?대쫫 (?臾몄옄), arg_out ???몄옄 (怨듬갚 ?쒓굅) ???
+ * ?ㅽ뙣 ??-1 (?쇰컲 而щ읆?대㈃ -1 諛섑솚). */
+static int parse_aggregate_call(const char *col_name, char *fn_out, size_t fn_size,
+                                char *arg_out, size_t arg_size)
+{
+    const char *p;
+    const char *open_paren;
+    const char *close_paren;
+    size_t fn_len;
+    size_t arg_len;
+    size_t i;
+
+    if (col_name == NULL || fn_out == NULL || arg_out == NULL) return -1;
+
+    /* '(' ?꾩튂 李얘린 */
+    open_paren = strchr(col_name, '(');
+    if (open_paren == NULL) return -1;
+
+    /* ?ル뒗 ')' 媛 留덉?留?湲?먯뿬????(怨듬갚 臾댁떆) */
+    close_paren = strrchr(col_name, ')');
+    if (close_paren == NULL || close_paren < open_paren) return -1;
+
+    /* ?⑥닔 ?대쫫 (open_paren ?? ??怨듬갚 ?쒖쇅?섍퀬 ?臾몄옄濡????*/
+    fn_len = 0;
+    for (p = col_name; p < open_paren && fn_len + 1 < fn_size; p++) {
+        if (!isspace((unsigned char)*p)) {
+            fn_out[fn_len++] = (char)toupper((unsigned char)*p);
+        }
+    }
+    fn_out[fn_len] = '\0';
+    if (fn_len == 0) return -1;
+
+    /* 5醫?吏묎퀎 ?⑥닔留??몄젙 */
+    if (strcmp(fn_out, "COUNT") != 0 && strcmp(fn_out, "SUM") != 0 &&
+        strcmp(fn_out, "AVG")   != 0 && strcmp(fn_out, "MIN") != 0 &&
+        strcmp(fn_out, "MAX")   != 0) {
+        return -1;
+    }
+
+    /* ?몄옄 (open_paren+1 ~ close_paren-1) ??怨듬갚 ?쒓굅 */
+    arg_len = 0;
+    for (p = open_paren + 1; p < close_paren && arg_len + 1 < arg_size; p++) {
+        if (!isspace((unsigned char)*p)) {
+            arg_out[arg_len++] = *p;
+        }
+    }
+    arg_out[arg_len] = '\0';
+    if (arg_len == 0) return -1;
+
+    (void)i;
+    return 0;
+}
+
+/* ?⑥씪 吏묎퀎 媛?怨꾩궛. col_index 媛 -1 ?대㈃ COUNT(*) 泥섎읆 而щ읆 臾닿?.
+ * out ??寃곌낵瑜?臾몄옄?대줈 ??? */
+static int evaluate_aggregate(const char *fn, int col_index, ColumnType type,
+                              const StorageRowBuffer *selection, char *out, size_t out_size)
+{
+    int i;
+
+    if (fn == NULL || selection == NULL || out == NULL || out_size == 0) return -1;
+
+    /* COUNT(*) ??而щ읆 臾닿?, ?⑥닚 ????*/
+    if (strcmp(fn, "COUNT") == 0) {
+        snprintf(out, out_size, "%d", selection->count);
+        return 0;
+    }
+
+    if (col_index < 0) {
+        fprintf(stderr, "[storage] %s requires a column argument\n", fn);
+        return -1;
+    }
+
+    /* MIN / MAX ??紐⑤뱺 ???(??낅퀎 鍮꾧탳) */
+    if (strcmp(fn, "MIN") == 0 || strcmp(fn, "MAX") == 0) {
+        int want_max = (strcmp(fn, "MAX") == 0);
+        const char *best = NULL;
+
+        if (selection->count == 0) {
+            if (out_size > 0) out[0] = '\0';
+            return 0;
+        }
+        best = selection->rows[0][col_index];
+        for (i = 1; i < selection->count; i++) {
+            int cmp = 0;
+            const char *cur = selection->rows[i][col_index];
+            if (compare_cells_by_type(type, cur, best, &cmp) != 0) {
+                /* ???鍮꾧탳 ?ㅽ뙣 ??臾몄옄??鍮꾧탳 fallback */
+                cmp = strcmp(cur ? cur : "", best ? best : "");
+                if (cmp > 0) cmp = 1;
+                else if (cmp < 0) cmp = -1;
+            }
+            if ((want_max && cmp > 0) || (!want_max && cmp < 0)) {
+                best = cur;
+            }
+        }
+        snprintf(out, out_size, "%s", best ? best : "");
+        return 0;
+    }
+
+    /* SUM / AVG ??INT ?먮뒗 FLOAT 留?*/
+    if (strcmp(fn, "SUM") == 0 || strcmp(fn, "AVG") == 0) {
+        if (type != TYPE_INT && type != TYPE_FLOAT) {
+            fprintf(stderr, "[storage] %s requires INT or FLOAT column\n", fn);
+            return -1;
+        }
+        if (selection->count == 0) {
+            snprintf(out, out_size, "0");
+            return 0;
+        }
+
+        if (type == TYPE_INT) {
+            long sum = 0;
+            for (i = 0; i < selection->count; i++) {
+                long v;
+                if (parse_long_value(selection->rows[i][col_index], &v) != 0) {
+                    fprintf(stderr, "[storage] %s: cannot parse integer '%s'\n",
+                            fn, selection->rows[i][col_index] ? selection->rows[i][col_index] : "");
+                    return -1;
+                }
+                sum += v;
+            }
+            if (strcmp(fn, "SUM") == 0) {
+                snprintf(out, out_size, "%ld", sum);
+            } else {
+                /* AVG: ?뺤닔 ??/ ?됱닔 ???뚯닔??2?먮━ */
+                double avg = (double)sum / (double)selection->count;
+                snprintf(out, out_size, "%.2f", avg);
+            }
+            return 0;
+        } else {  /* TYPE_FLOAT */
+            double sum = 0.0;
+            for (i = 0; i < selection->count; i++) {
+                double v;
+                if (parse_double_value(selection->rows[i][col_index], &v) != 0) {
+                    fprintf(stderr, "[storage] %s: cannot parse float '%s'\n",
+                            fn, selection->rows[i][col_index] ? selection->rows[i][col_index] : "");
+                    return -1;
+                }
+                sum += v;
+            }
+            if (strcmp(fn, "SUM") == 0) {
+                snprintf(out, out_size, "%.2f", sum);
+            } else {
+                snprintf(out, out_size, "%.2f", sum / (double)selection->count);
+            }
+            return 0;
+        }
+    }
+
+    return -1;
+}
+
+/* 吏묎퀎 ?⑥닔 SELECT ??RowSet (?⑥씪 ?? 鍮뚮뱶. */
+static int build_rowset_for_aggregate(const ParsedSQL *sql, const ColDef *schema, int schema_count,
+                                      const StorageRowBuffer *selection, RowSet **out)
+{
+    char fn[16];
+    char arg[64];
+    int col_index = -1;
+    ColumnType col_type = TYPE_VARCHAR;
+    char value[256];
+    RowSet *rs = NULL;
+
+    if (parse_aggregate_call(sql->columns[0], fn, sizeof(fn), arg, sizeof(arg)) != 0) {
+        fprintf(stderr, "[storage] not an aggregate call: %s\n", sql->columns[0]);
+        return -1;
+    }
+
+    /* COUNT(*) 媛 ?꾨땲硫?而щ읆 ?몃뜳??李얘린 */
+    if (strcmp(arg, "*") != 0) {
+        col_index = find_schema_index(schema, schema_count, arg);
+        if (col_index < 0) {
+            fprintf(stderr, "[storage] aggregate column not found: %s\n", arg);
+            return -1;
+        }
+        col_type = schema[col_index].type;
+    }
+
+    if (evaluate_aggregate(fn, col_index, col_type, selection, value, sizeof(value)) != 0) {
+        return -1;
+    }
+
+    /* ?⑥씪 ??RowSet (1 col x 1 row) */
+    if (rowset_alloc(&rs, 1, 1) != 0) return -1;
+    rs->col_names[0] = dup_string(sql->columns[0]);  /* ?먮낯 ?쒓린 洹몃?濡?*/
+    if (rs->col_names[0] == NULL) goto fail;
+    rs->rows[0] = calloc(1, sizeof(char *));
+    if (rs->rows[0] == NULL) goto fail;
+    rs->rows[0][0] = dup_string(value);
+    if (rs->rows[0][0] == NULL) goto fail;
+
+    *out = rs;
+    return 0;
+
+fail:
+    rowset_free(rs);
+    return -1;
 }
 

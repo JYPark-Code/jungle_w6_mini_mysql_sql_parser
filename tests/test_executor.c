@@ -21,9 +21,13 @@
 #endif
 
 #define DATA_DIR "data"
+#define DATA_SCHEMA_DIR DATA_DIR "/schema"
+#define DATA_TABLES_DIR DATA_DIR "/tables"
 #define TEST_OUTPUT_PATH DATA_DIR "/test_output.txt"
 #define USERS_SCHEMA_PATH DATA_DIR "/users.schema"
 #define USERS_CSV_PATH DATA_DIR "/users.csv"
+#define USERS_NESTED_SCHEMA_PATH DATA_SCHEMA_DIR "/users.schema"
+#define USERS_NESTED_CSV_PATH DATA_TABLES_DIR "/users.csv"
 
 static char *duplicate_string(const char *source)
 {
@@ -57,6 +61,23 @@ static int ensure_data_dir(void)
     }
 
     return 1;
+}
+
+static int ensure_executor_fixture_dirs(void)
+{
+    if (ensure_data_dir() != 0) {
+        return 1;
+    }
+
+    if (make_dir(DATA_SCHEMA_DIR) != 0 && errno != EEXIST) {
+        return 1;
+    }
+
+    if (make_dir(DATA_TABLES_DIR) != 0 && errno != EEXIST) {
+        return 1;
+    }
+
+    return 0;
 }
 
 static char *read_text_file(const char *path)
@@ -128,6 +149,8 @@ static void cleanup_fixture_files(void)
     remove(TEST_OUTPUT_PATH);
     remove(USERS_CSV_PATH);
     remove(USERS_SCHEMA_PATH);
+    remove(USERS_NESTED_CSV_PATH);
+    remove(USERS_NESTED_SCHEMA_PATH);
 }
 
 /* Recreate fixture files so executor tests still pass after make clean. */
@@ -147,7 +170,7 @@ static int prepare_users_fixture(void)
         "3,Chloe,27,Seoul,true,2024-02-28,79.2\n"
         "4,Dylan,31,Incheon,true,2022-08-19,95.1\n";
 
-    if (ensure_data_dir() != 0) {
+    if (ensure_executor_fixture_dirs() != 0) {
         return 1;
     }
 
@@ -156,6 +179,14 @@ static int prepare_users_fixture(void)
     }
 
     if (write_text_file(USERS_CSV_PATH, csv) != 0) {
+        return 1;
+    }
+
+    if (write_text_file(USERS_NESTED_SCHEMA_PATH, schema) != 0) {
+        return 1;
+    }
+
+    if (write_text_file(USERS_NESTED_CSV_PATH, csv) != 0) {
         return 1;
     }
 
