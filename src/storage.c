@@ -12,6 +12,8 @@
 
 static int validate_insert_input(const char *table, char **values, int count);
 static int validate_delete_input(const char *table, WhereClause *where, int where_count);
+static int validate_update_input(const char *table, SetClause *set, int set_count,
+                                 WhereClause *where, int where_count);
 static int build_schema_path(const char *table, char *out, size_t size);
 static int build_table_path(const char *table, char *out, size_t size);
 static int build_temp_path(const char *table, char *out, size_t size);
@@ -26,8 +28,17 @@ static int write_csv_field(FILE *fp, const char *value);
 static int validate_delete_clause(const ColDef *schema, int schema_count,
                                   WhereClause *where, int where_count,
                                   int *out_where_index);
+static int validate_update_set_clause(const ColDef *schema, int schema_count,
+                                      SetClause *set, int set_count,
+                                      int **out_set_indexes);
 static int delete_rows_from_table(const char *table_path, const char *temp_path,
                                   const ColDef *schema, int schema_count,
+                                  WhereClause *where, int where_count,
+                                  int where_index);
+static int update_rows_from_table(const char *table_path, const char *temp_path,
+                                  const ColDef *schema, int schema_count,
+                                  SetClause *set, int set_count,
+                                  const int *set_indexes,
                                   WhereClause *where, int where_count,
                                   int where_index);
 static int read_csv_record(FILE *fp, char **out_record);
@@ -38,6 +49,9 @@ static int push_field(char ***fields, int *field_count,
 static int row_matches_delete(const ColDef *schema, char **row, int row_count,
                               WhereClause *where, int where_count,
                               int where_index, int *out_match);
+static int apply_update_to_row(char **row, int row_count,
+                               SetClause *set, int set_count,
+                               const int *set_indexes);
 static int compare_value_by_type(ColumnType type, const char *left,
                                  const char *op, const char *right,
                                  int *out_match);
@@ -50,6 +64,8 @@ static int replace_table_file(const char *table_path, const char *temp_path);
 static int is_supported_operator(const char *op);
 static int is_supported_operator_for_type(ColumnType type, const char *op);
 static int validate_literal_for_type(ColumnType type, const char *op, const char *value);
+static int validate_update_value_for_type(ColumnType type, const char *value);
+static int validate_date_text(const char *text);
 static void free_string_array(char **arr, int count);
 
 static char *dup_string(const char *src);
@@ -159,13 +175,51 @@ int storage_select(const char *table, ParsedSQL *sql)
 int storage_update(const char *table, SetClause *set, int set_count,
                    WhereClause *where, int where_count)
 {
-    (void)table;
-    (void)set;
-    (void)set_count;
-    (void)where;
-    (void)where_count;
-    fprintf(stderr, "[storage] UPDATE is not implemented yet\n");
-    return -1;
+    char schema_path[STORAGE_PATH_MAX];
+    char table_path[STORAGE_PATH_MAX];
+    char temp_path[STORAGE_PATH_MAX];
+    ColDef *schema = NULL;
+    int schema_count = 0;
+    int *set_indexes = NULL;
+    int where_index = -1;
+    int status = -1;
+
+    if (validate_update_input(table, set, set_count, where, where_count) != 0) {
+        return -1;
+    }
+
+    if (build_schema_path(table, schema_path, sizeof(schema_path)) != 0) {
+        return -1;
+    }
+
+    if (build_table_path(table, table_path, sizeof(table_path)) != 0) {
+        return -1;
+    }
+
+    if (build_temp_path(table, temp_path, sizeof(temp_path)) != 0) {
+        return -1;
+    }
+
+    if (load_schema(schema_path, &schema, &schema_count) != 0) {
+        return -1;
+    }
+
+    if (validate_update_set_clause(schema, schema_count, set, set_count, &set_indexes) != 0) {
+        goto cleanup;
+    }
+
+    if (validate_delete_clause(schema, schema_count, where, where_count, &where_index) != 0) {
+        goto cleanup;
+    }
+
+    status = update_rows_from_table(table_path, temp_path, schema, schema_count,
+                                    set, set_count, set_indexes,
+                                    where, where_count, where_index);
+
+cleanup:
+    free(set_indexes);
+    free(schema);
+    return status;
 }
 
 /* 입력: 테이블 이름, CREATE TABLE의 컬럼 정의 문자열 배열, 개수
@@ -202,6 +256,36 @@ static int validate_insert_input(const char *table, char **values, int count)
 static int validate_delete_input(const char *table, WhereClause *where, int where_count)
 {
     if (table == NULL || table[0] == '\0') {
+        return -1;
+    }
+
+    if (where_count < 0) {
+        return -1;
+    }
+
+    if (where_count == 0) {
+        return 0;
+    }
+
+    if (where_count != 1 || where == NULL) {
+        return -1;
+    }
+
+    if (where[0].column[0] == '\0' || where[0].op[0] == '\0') {
+        return -1;
+    }
+
+    return 0;
+}
+
+static int validate_update_input(const char *table, SetClause *set, int set_count,
+                                 WhereClause *where, int where_count)
+{
+    if (table == NULL || table[0] == '\0') {
+        return -1;
+    }
+
+    if (set == NULL || set_count <= 0) {
         return -1;
     }
 
@@ -582,6 +666,58 @@ static int validate_delete_clause(const ColDef *schema, int schema_count,
     return 0;
 }
 
+static int validate_update_set_clause(const ColDef *schema, int schema_count,
+                                      SetClause *set, int set_count,
+                                      int **out_set_indexes)
+{
+    int *set_indexes;
+    int i;
+
+    if (schema == NULL || set == NULL || out_set_indexes == NULL) {
+        return -1;
+    }
+
+    *out_set_indexes = NULL;
+
+    set_indexes = malloc(sizeof(*set_indexes) * (size_t)set_count);
+    if (set_indexes == NULL) {
+        return -1;
+    }
+
+    for (i = 0; i < set_count; ++i) {
+        int column_index;
+        int j;
+
+        if (set[i].column[0] == '\0') {
+            free(set_indexes);
+            return -1;
+        }
+
+        column_index = find_schema_index(schema, schema_count, set[i].column);
+        if (column_index < 0) {
+            free(set_indexes);
+            return -1;
+        }
+
+        for (j = 0; j < i; ++j) {
+            if (set_indexes[j] == column_index) {
+                free(set_indexes);
+                return -1;
+            }
+        }
+
+        if (validate_update_value_for_type(schema[column_index].type, set[i].value) != 0) {
+            free(set_indexes);
+            return -1;
+        }
+
+        set_indexes[i] = column_index;
+    }
+
+    *out_set_indexes = set_indexes;
+    return 0;
+}
+
 /* 입력: 원본 테이블 경로, 임시 파일 경로, schema, optional WHERE 정보
  * 동작: 테이블을 record 단위로 읽고 DELETE 조건에 안 맞는 row만 temp 파일에 재저장
  * 반환: 재작성 성공 0, CSV 파싱/쓰기/파일 교체 실패 -1 */
@@ -642,6 +778,111 @@ static int delete_rows_from_table(const char *table_path, const char *temp_path,
         }
 
         if (!matches && write_csv_row(temp_fp, row, row_count) != 0) {
+            free_string_array(row, row_count);
+            goto cleanup;
+        }
+
+        free_string_array(row, row_count);
+    }
+
+    if (fclose(source_fp) != 0) {
+        source_fp = NULL;
+        goto cleanup;
+    }
+    source_fp = NULL;
+
+    if (fclose(temp_fp) != 0) {
+        temp_fp = NULL;
+        goto cleanup;
+    }
+    temp_fp = NULL;
+
+    if (replace_table_file(table_path, temp_path) != 0) {
+        goto cleanup;
+    }
+
+    status = 0;
+
+cleanup:
+    if (source_fp != NULL) {
+        fclose(source_fp);
+    }
+
+    if (temp_fp != NULL) {
+        fclose(temp_fp);
+    }
+
+    if (status != 0) {
+        remove(temp_path);
+    }
+
+    return status;
+}
+
+static int update_rows_from_table(const char *table_path, const char *temp_path,
+                                  const ColDef *schema, int schema_count,
+                                  SetClause *set, int set_count,
+                                  const int *set_indexes,
+                                  WhereClause *where, int where_count,
+                                  int where_index)
+{
+    FILE *source_fp = NULL;
+    FILE *temp_fp = NULL;
+    int status = -1;
+
+    remove(temp_path);
+
+    source_fp = fopen(table_path, "r");
+    if (source_fp == NULL) {
+        return -1;
+    }
+
+    temp_fp = fopen(temp_path, "w");
+    if (temp_fp == NULL) {
+        fclose(source_fp);
+        return -1;
+    }
+
+    for (;;) {
+        char *record = NULL;
+        char **row = NULL;
+        int row_count = 0;
+        int read_status;
+        int matches = 0;
+
+        read_status = read_csv_record(source_fp, &record);
+        if (read_status == 0) {
+            break;
+        }
+
+        if (read_status < 0) {
+            goto cleanup;
+        }
+
+        if (parse_csv_record(record, &row, &row_count) != 0) {
+            free(record);
+            goto cleanup;
+        }
+
+        free(record);
+
+        if (row_count != schema_count) {
+            free_string_array(row, row_count);
+            goto cleanup;
+        }
+
+        if (row_matches_delete(schema, row, row_count, where, where_count,
+                               where_index, &matches) != 0) {
+            free_string_array(row, row_count);
+            goto cleanup;
+        }
+
+        if (matches && apply_update_to_row(row, row_count, set, set_count, set_indexes) != 0) {
+            free_string_array(row, row_count);
+            goto cleanup;
+        }
+
+        if (write_csv_row(temp_fp, row, row_count) != 0) {
             free_string_array(row, row_count);
             goto cleanup;
         }
@@ -959,6 +1200,36 @@ static int row_matches_delete(const ColDef *schema, char **row, int row_count,
                                  out_match);
 }
 
+static int apply_update_to_row(char **row, int row_count,
+                               SetClause *set, int set_count,
+                               const int *set_indexes)
+{
+    int i;
+
+    if (row == NULL || set == NULL || set_indexes == NULL) {
+        return -1;
+    }
+
+    for (i = 0; i < set_count; ++i) {
+        char *updated_value;
+        int column_index = set_indexes[i];
+
+        if (column_index < 0 || column_index >= row_count) {
+            return -1;
+        }
+
+        updated_value = dup_string(set[i].value);
+        if (updated_value == NULL) {
+            return -1;
+        }
+
+        free(row[column_index]);
+        row[column_index] = updated_value;
+    }
+
+    return 0;
+}
+
 /* 입력: 컬럼 타입, 왼쪽 row 값, 연산자, 오른쪽 literal
  * 동작: 타입별 파싱/비교 규칙에 따라 WHERE 조건의 참/거짓 계산
  * 반환: 비교 성공 0, 결과는 out_match에 기록, 타입 부적합/지원 안 함이면 -1 */
@@ -1253,6 +1524,70 @@ static int validate_literal_for_type(ColumnType type, const char *op, const char
     }
 
     return -1;
+}
+
+static int validate_update_value_for_type(ColumnType type, const char *value)
+{
+    long long_value;
+    double double_value;
+    int bool_value;
+
+    switch (type) {
+        case TYPE_INT:
+            return parse_long_value(value, &long_value);
+
+        case TYPE_FLOAT:
+            return parse_double_value(value, &double_value);
+
+        case TYPE_BOOLEAN:
+            return parse_boolean_value(value, &bool_value);
+
+        case TYPE_DATE:
+            return validate_date_text(value);
+
+        case TYPE_VARCHAR:
+        case TYPE_DATETIME:
+            return 0;
+    }
+
+    return -1;
+}
+
+static int validate_date_text(const char *text)
+{
+    int month;
+    int day;
+    int i;
+
+    if (text == NULL || strlen(text) != 10U) {
+        return -1;
+    }
+
+    for (i = 0; i < 10; ++i) {
+        if (i == 4 || i == 7) {
+            if (text[i] != '-') {
+                return -1;
+            }
+            continue;
+        }
+
+        if (!isdigit((unsigned char)text[i])) {
+            return -1;
+        }
+    }
+
+    month = (text[5] - '0') * 10 + (text[6] - '0');
+    day = (text[8] - '0') * 10 + (text[9] - '0');
+
+    if (month < 1 || month > 12) {
+        return -1;
+    }
+
+    if (day < 1 || day > 31) {
+        return -1;
+    }
+
+    return 0;
 }
 
 /* 입력: 동적 문자열 배열, 배열 길이
