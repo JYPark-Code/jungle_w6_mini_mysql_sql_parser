@@ -15,6 +15,31 @@
 #include <stdlib.h>
 #include <string.h>
 
+#define MINISQL_VERSION "0.1.0"
+
+static void print_help(const char *prog) {
+    printf(
+        "MiniSQL %s — 파일 기반 SQL 처리기\n"
+        "\n"
+        "사용:\n"
+        "  %s <file.sql> [옵션...]\n"
+        "  %s --help | --version\n"
+        "\n"
+        "옵션:\n"
+        "  --debug      파싱 결과를 AST 트리로 출력\n"
+        "  --json       파싱 결과를 JSON 으로 출력\n"
+        "  --tokens     토크나이저 출력만 (파싱/실행 안 함)\n"
+        "  --format     ParsedSQL → 정규화된 SQL 로 재출력\n"
+        "  --help, -h   이 도움말 출력\n"
+        "  --version    버전 출력\n"
+        "\n"
+        "예시:\n"
+        "  %s query.sql --debug\n"
+        "  %s query.sql --json\n"
+        "  %s query.sql --format\n",
+        MINISQL_VERSION, prog, prog, prog, prog, prog);
+}
+
 static char *read_file(const char *path) {
     FILE *fp = fopen(path, "rb");
     if (!fp) { perror(path); return NULL; }
@@ -75,10 +100,23 @@ static void run_statements(const char *src, int debug_mode, int json_mode,
 }
 
 int main(int argc, char **argv) {
+    /* --help / --version 은 인자 위치 무관, 어디에 있어도 우선 처리 */
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
+            print_help(argv[0]);
+            return 0;
+        }
+        if (strcmp(argv[i], "--version") == 0) {
+            printf("MiniSQL %s\n", MINISQL_VERSION);
+            return 0;
+        }
+    }
+
     if (argc < 2) {
         fprintf(stderr,
-                "usage: %s <file.sql> [--json] [--debug] [--tokens] [--format]\n",
-                argv[0]);
+                "usage: %s <file.sql> [--json] [--debug] [--tokens] [--format]\n"
+                "       %s --help\n",
+                argv[0], argv[0]);
         return 1;
     }
 
